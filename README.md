@@ -1,25 +1,71 @@
-# Caleo Bot - Microsoft Teams AI Assistant
+# Caleo Bot - Enterprise Meeting Scheduler for Microsoft Teams
 
-Caleo is an AI-powered assistant bot for Microsoft Teams that integrates seamlessly into your team conversations. Users can @mention Caleo in channels or send direct messages to get AI-powered assistance.
+Caleo is an AI-powered meeting scheduler that integrates seamlessly into Microsoft Teams. Using natural language processing and Microsoft Graph API, Caleo intelligently schedules meetings by understanding user intent, checking calendar availability, and coordinating with team members across your organization.
 
-## Features
+## 🎯 Business Use Case
 
-- 🤖 **AI-Powered Responses**: Intelligent responses using your Azure LLM backend
-- 💬 **Seamless Integration**: Appears as a team member in Microsoft Teams
-- 📝 **Console Logging**: All messages are logged for debugging
-- 🔧 **Easy Development**: Simple setup for local development and testing
+**Problem**: Enterprise teams waste significant time coordinating meetings across multiple calendars, time zones, and availability constraints.
 
-## Prerequisites
+**Solution**: Caleo acts as an intelligent meeting coordinator that:
+- Understands natural language meeting requests
+- Checks real-time calendar availability across your organization
+- Suggests optimal meeting times based on participant schedules
+- Automatically creates and sends meeting invitations
+- Handles timezone conversions and scheduling conflicts
 
-Before you begin, ensure you have:
+## ✨ Key Features
 
-1. **Node.js** (v16 or higher)
-2. **npm** (comes with Node.js)
-3. **Microsoft Teams** (desktop app recommended)
-4. **Azure App Registration** (already set up)
-5. **ngrok** (for local development tunneling)
+### 🤖 **AI-Powered Natural Language Processing**
+- Understands complex meeting requests: *"Schedule a 1-hour product review with the engineering team next Tuesday afternoon"*
+- Extracts meeting details: participants, duration, preferred times, agenda items
+- Handles follow-up questions and clarifications
 
-## Quick Start
+### 📅 **Microsoft Graph Integration**
+- **Calendar Access**: Read availability across all participants
+- **People Search**: Find team members by name, role, or department
+- **Meeting Creation**: Automatically create calendar events
+- **Conflict Detection**: Identify and resolve scheduling conflicts
+- **Timezone Handling**: Automatic timezone conversion for global teams
+
+### 💬 **Seamless Teams Integration**
+- Appears as a team member in Microsoft Teams
+- Responds to @mentions in channels
+- Handles direct messages for private scheduling
+- Rich card interfaces for meeting confirmations
+
+### 🔍 **Intelligent Scheduling Logic**
+- **Availability Analysis**: Find optimal time slots across all participants
+- **Preference Learning**: Remember user scheduling preferences
+- **Conflict Resolution**: Suggest alternative times when conflicts arise
+- **Recurring Meetings**: Handle weekly, monthly, and custom recurring patterns
+
+## 🏗️ Architecture Overview
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Microsoft     │    │     Caleo Bot    │    │   Supabase      │
+│     Teams       │◄──►│   (Node.js/TS)   │◄──►│  Edge Function  │
+│                 │    │                  │    │   (LLM Backend) │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+                                │
+                                ▼
+                       ┌──────────────────┐
+                       │  Microsoft Graph │
+                       │      API         │
+                       │  (Calendars &    │
+                       │   People)        │
+                       └──────────────────┘
+```
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+1. **Node.js** (v18 or higher)
+2. **Microsoft Teams** (desktop app recommended)
+3. **Azure App Registration** with Microsoft Graph permissions
+4. **Supabase Account** (for LLM backend)
+5. **ngrok** (for local development)
 
 ### 1. Install Dependencies
 
@@ -29,135 +75,226 @@ npm install
 
 ### 2. Configure Environment
 
-Copy the example config and update with your Azure app details:
+Copy the template and add your credentials:
 
 ```bash
 cp config.env .env
 ```
 
-Edit `.env` and add your Azure app registration details:
-```
-MICROSOFT_APP_ID=your_actual_app_id
-MICROSOFT_APP_PASSWORD=your_actual_app_password
+Edit `.env` with your Azure app details:
+```env
+# Microsoft App Registration
+MICROSOFT_APP_ID=your_app_id_here
+MICROSOFT_APP_PASSWORD=your_app_password_here
+
+# Server Configuration
 PORT=3978
+
+# Ngrok URL (update when running ngrok)
+NGROK_URL=your_ngrok_url_here
+
+# Supabase Configuration (for LLM backend)
+SUPABASE_URL=your_supabase_url
+SUPABASE_ANON_KEY=your_supabase_anon_key
 ```
 
-### 3. Start the Bot
+### 3. Build and Start
 
 ```bash
-# Development mode with auto-restart
-npm run dev
+# Build TypeScript
+npm run build
 
-# Or production mode
+# Start the bot
 npm start
 ```
 
-The bot will start on `http://localhost:3978`
-
-### 4. Expose Bot with ngrok
-
-In a new terminal:
+### 4. Expose with ngrok
 
 ```bash
-# Install ngrok if you haven't already
+# Install ngrok globally
 npm install -g ngrok
 
 # Expose your bot
 npm run ngrok
 ```
 
-Copy the HTTPS URL (e.g., `https://abc123.ngrok.io`)
+### 5. Configure Microsoft Teams
 
-### 5. Update Manifest
+1. **Update Manifest**: Edit `manifest/manifest.json` with your app ID and ngrok URL
+2. **Side-load App**: Upload the manifest folder to Microsoft Teams
+3. **Grant Permissions**: Allow calendar and people access when prompted
 
-Edit `manifest/manifest.json`:
-1. Replace `your-app-id-here` with your actual Azure App ID
-2. Replace `your-ngrok-url.ngrok.io` with your ngrok URL
-3. Update other placeholder values
+### 6. Test the Bot
 
-### 6. Side-load in Microsoft Teams
+Start a conversation with Caleo and try:
+- *"Schedule a meeting with John Smith tomorrow at 2 PM"*
+- *"Find a time for a 1-hour team standup next week"*
+- *"When is Sarah available for a project review?"*
 
-1. Open Microsoft Teams
-2. Go to **Apps** → **Manage your apps** → **Upload an app**
-3. Select **Upload a custom app**
-4. Choose the `manifest` folder
-5. Click **Add**
+## 📋 Microsoft Graph Permissions Required
 
-### 7. Test the Bot
+The bot requires these Microsoft Graph API permissions:
 
-1. Find Caleo in your Teams app list
-2. Start a conversation with Caleo
-3. Send a message like "Hello Caleo!"
-4. Check your console for logged messages
-5. Caleo should respond with "Hi, I'm Caleo! 👋"
+### Calendar Permissions
+- `Calendars.Read` - Read user calendars
+- `Calendars.ReadWrite` - Create and modify calendar events
+- `Calendars.ReadWrite.Shared` - Access shared calendars
 
-## Development Workflow
+### People Permissions
+- `People.Read` - Read user profiles and contacts
+- `User.Read.All` - Read all users in the organization
+- `Directory.Read.All` - Read organizational directory
+
+### Teams Permissions
+- `Channel.ReadBasic.All` - Read channel information
+- `Team.ReadBasic.All` - Read team information
+
+## 🔧 Development Workflow
 
 ### Local Development
 
-1. **Start the bot**: `npm run dev`
-2. **Expose with ngrok**: `npm run ngrok` (in another terminal)
-3. **Update manifest** with new ngrok URL if it changes
-4. **Re-upload to Teams** if manifest changed
-5. **Test in Teams** and check console logs
+1. **Start Bot**: `npm run dev` (auto-restart on changes)
+2. **Expose with ngrok**: `npm run ngrok` (in separate terminal)
+3. **Update Manifest**: If ngrok URL changes, update manifest.json
+4. **Re-upload to Teams**: If manifest changes, re-upload to Teams
+5. **Test & Debug**: Check console logs for message processing
 
-### Console Logging
-
-All incoming messages are logged to the console with:
-- User name
-- Message content
-- Channel information
-- Conversation details
-
-### Bot Behavior
-
-- **Direct Messages**: Responds to all messages
-- **Channel Messages**: Only responds when @mentioned
-- **Current Response**: "Hi, I'm Caleo! 👋" + "I'm your AI assistant. How can I help you today?"
-
-## Project Structure
+### Project Structure
 
 ```
 caleoBot/
 ├── src/
-│   └── index.ts          # Main bot logic
+│   └── index.ts              # Main bot logic and message handling
 ├── manifest/
-│   ├── manifest.json     # Teams app manifest
-│   ├── color.png         # Bot icon (192x192)
-│   └── outline.png       # Bot outline icon (32x32)
-├── config.env            # Environment variables template
-├── package.json          # Dependencies and scripts
-├── tsconfig.json         # TypeScript configuration
-└── README.md            # This file
+│   ├── manifest.json         # Teams app configuration
+│   ├── color.png            # Bot icon (192x192)
+│   └── outline.png          # Bot outline icon (32x32)
+├── config.env               # Environment variables template
+├── .env                     # Actual environment variables (git-ignored)
+├── package.json             # Dependencies and scripts
+├── tsconfig.json            # TypeScript configuration
+└── README.md               # This file
 ```
 
-## Next Steps
+### Current Bot Behavior
 
-1. **Integrate Azure APIs**: Replace hardcoded responses with actual LLM calls
-2. **Add Authentication**: Use Teams identity for API authentication
-3. **Enhance Responses**: Add more sophisticated conversation logic
-4. **Add Features**: File handling, rich cards, etc.
+- **Direct Messages**: Responds to all messages with AI processing
+- **Channel Messages**: Only responds when @mentioned
+- **Message Processing**: Logs all incoming messages for debugging
+- **Response Format**: Sends structured responses via Teams messaging
 
-## Troubleshooting
+## 🎯 Example Use Cases
+
+### 1. Simple Meeting Request
+**User**: *"Schedule a 30-minute catch-up with the marketing team tomorrow"*
+
+**Caleo Response**:
+- Finds all marketing team members
+- Checks availability for tomorrow
+- Suggests optimal time slots
+- Creates calendar event and sends invitations
+
+### 2. Complex Scheduling
+**User**: *"I need a 2-hour product review with engineering, design, and product managers next week, preferably in the afternoon"*
+
+**Caleo Response**:
+- Identifies team members from each department
+- Analyzes availability across all participants
+- Considers timezone differences
+- Suggests multiple afternoon options
+- Handles follow-up questions about specific times
+
+### 3. Availability Check
+**User**: *"When is everyone free for a team building event this Friday?"*
+
+**Caleo Response**:
+- Checks calendar availability for all team members
+- Identifies common free time slots
+- Suggests optimal duration and timing
+- Provides conflict resolution options
+
+## 🔮 Planned Features
+
+### Phase 1: Core Scheduling (Current)
+- ✅ Basic message processing
+- ✅ Microsoft Teams integration
+- ✅ Natural language understanding
+- 🔄 Calendar availability checking
+- 🔄 Meeting creation and invitations
+
+### Phase 2: Advanced Features
+- 📅 Recurring meeting patterns
+- 🌍 Multi-timezone support
+- 📝 Meeting agenda integration
+- 🔔 Smart notifications and reminders
+- 📊 Meeting analytics and insights
+
+### Phase 3: Enterprise Features
+- 🏢 Department and role-based scheduling
+- 📋 Meeting room and resource booking
+- 🔐 Advanced permission management
+- 📈 Usage analytics and reporting
+- 🔗 Integration with other enterprise tools
+
+## 🛡️ Security Considerations
+
+> **Note**: This is a development version. The following security improvements are planned for production:
+
+### Immediate Security Needs
+- [ ] Move hardcoded credentials to environment variables
+- [ ] Implement proper secret management
+- [ ] Add input validation and sanitization
+- [ ] Implement rate limiting and security headers
+- [ ] Add proper error handling and logging
+
+### Production Security Requirements
+- [ ] HTTPS enforcement
+- [ ] OAuth2 flow for Microsoft Graph access
+- [ ] Data encryption in transit and at rest
+- [ ] Audit logging and monitoring
+- [ ] GDPR compliance for EU users
+- [ ] Access controls and permission management
+
+## 🐛 Troubleshooting
 
 ### Bot Not Responding
-- Check console logs for errors
-- Verify ngrok is running and URL is correct
-- Ensure manifest.json has correct app ID and ngrok URL
-- Check Azure app registration permissions
+1. Check console logs for authentication errors
+2. Verify ngrok is running and URL is accessible
+3. Ensure manifest.json has correct app ID and ngrok URL
+4. Check Azure app registration permissions
+5. Verify Microsoft Graph permissions are granted
 
-### Side-loading Issues
-- Make sure manifest.json is valid JSON
-- Verify all required fields are filled
-- Check that icons exist and are correct size
-- Try refreshing Teams or clearing cache
+### Authentication Issues
+1. Regenerate app password in Azure portal
+2. Update .env file with new credentials
+3. Restart the bot after credential changes
+4. Check tenant ID configuration
 
-### Connection Issues
-- Verify ngrok is running
-- Check firewall settings
-- Ensure bot is running on correct port
-- Verify Azure app credentials
+### Microsoft Graph Access
+1. Ensure proper permissions are granted in Azure portal
+2. Check that Teams app has been granted consent
+3. Verify user has appropriate licenses for Graph API access
+4. Test Graph API calls independently
 
-## Support
+## 📚 Resources
 
-For issues or questions, check the console logs first, then refer to the Microsoft Teams Bot Framework documentation.
+- [Microsoft Teams Bot Framework Documentation](https://docs.microsoft.com/en-us/microsoftteams/platform/bots/what-are-bots)
+- [Microsoft Graph API Documentation](https://docs.microsoft.com/en-us/graph/)
+- [Supabase Edge Functions](https://supabase.com/docs/guides/functions)
+- [Azure App Registration Guide](https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app)
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test thoroughly with Microsoft Teams
+5. Submit a pull request
+
+## 📄 License
+
+MIT License - see LICENSE file for details
+
+---
+
+**Caleo Bot** - Making enterprise meeting scheduling as simple as a conversation. 🚀

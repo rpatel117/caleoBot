@@ -2,11 +2,11 @@
   "name": "caleo-bot",
   "version": "1.0.0",
   "description": "Caleo Bot for Microsoft Teams",
-  "main": "src/index.js",
+  "main": "dist/index.js",
   "scripts": {
     "setup": "node setup.js",
-    "start": "node src/index.js",
-    "dev": "nodemon src/index.js",
+    "start": "node dist/index.js",
+    "dev": "nodemon dist/index.js",
     "build": "tsc",
     "package": "npm run build && bestzip caleo-bot.zip manifest/ package.json src/ node_modules/",
     "ngrok": "npx ngrok http 3978"
@@ -21,8 +21,9 @@
   "license": "MIT",
   "dependencies": {
     "botbuilder": "^4.21.0",
-    "restify": "^11.1.0",
-    "dotenv": "^16.3.1"
+    "dotenv": "^16.3.1",
+    "node-fetch": "^3.3.2",
+    "restify": "^11.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.4.5",

@@ -27,23 +27,18 @@
     {
       "botId": "7ac8f532-c402-43c4-bcb9-7d18a7184ca0",
       "scopes": [
-        "personal",
-        "team",
-        "groupchat"
+        "personal"
       ],
       "supportsFiles": false,
-      "isNotificationOnly": false
+      "isNotificationOnly": false,
+      "supportsCalling": false,
+      "supportsVideo": false
     }
   ],
   "permissions": [
-    "identity",
-    "messageTeamMembers"
+    "identity"
   ],
   "validDomains": [
-    "your-ngrok-url.ngrok.io"
-  ],
-  "webApplicationInfo": {
-    "id": "7ac8f532-c402-43c4-bcb9-7d18a7184ca0",
-    "resource": "https://RscBasedStoreApp"
-  }
+    "nonperversive-bellicosely-tawanna.ngrok-free.dev"
+  ]
 }
