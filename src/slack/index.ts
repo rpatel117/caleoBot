@@ -257,6 +257,7 @@ async function processUserMessage(args: {
   teamId?: string;
   channel: string;
   threadTs?: string;
+  replyTs?: string;
   text: string;
 }): Promise<void> {
   const normalizedText = normalizeMessageText(args.text);
@@ -279,7 +280,7 @@ async function processUserMessage(args: {
 
       await args.client.chat.postMessage({
         channel: args.channel,
-        thread_ts: args.threadTs,
+        thread_ts: args.replyTs ?? args.threadTs,
         text: 'I need calendar access to help with that. Please connect a provider:',
         blocks: [
           {
@@ -316,7 +317,7 @@ async function processUserMessage(args: {
 
   await args.client.chat.postMessage({
     channel: args.channel,
-    thread_ts: args.threadTs,
+    thread_ts: args.replyTs ?? args.threadTs,
     text: 'Caleo is processing your request...',
   });
 
@@ -338,7 +339,7 @@ async function processUserMessage(args: {
   for (const chunk of chunks) {
     await args.client.chat.postMessage({
       channel: args.channel,
-      thread_ts: args.threadTs,
+      thread_ts: args.replyTs ?? args.threadTs,
       text: chunk,
     });
   }
@@ -349,7 +350,7 @@ async function processUserMessage(args: {
     if (tokens.length === 0) {
       await args.client.chat.postMessage({
         channel: args.channel,
-        thread_ts: args.threadTs,
+        thread_ts: args.replyTs ?? args.threadTs,
         text: 'Tip: I can also manage your calendar! Use /caleo-auth to connect Microsoft Outlook or Google Calendar.',
       });
     }
@@ -457,6 +458,7 @@ app.event('message', async ({ event, body, client }: any) => {
     teamId: body?.team_id,
     channel: event.channel,
     threadTs: undefined,
+    replyTs: event.ts,
     text: event.text || '',
   });
 });
