@@ -1,0 +1,55 @@
+name: Deploy Agent (Lambda)
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'src/agent/**'
+      - 'src/calendar/**'
+      - 'src/email/**'
+      - 'src/database/**'
+      - 'src/encryption.ts'
+      - 'src/types.ts'
+      - 'package.json'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Package Lambda
+        run: |
+          cd dist
+          zip -r ../lambda.zip . -x "slack/*"
+          cd ..
+          zip -r lambda.zip node_modules/ -x "node_modules/@slack/*" "node_modules/nodemon/*"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::673652690166:role/caleo-github-actions-role
+          aws-region: us-east-1
+
+      - name: Deploy to Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name caleo-agent \
+            --zip-file fileb://lambda.zip
+          aws lambda wait function-updated --function-name caleo-agent
+          echo "Agent deployed successfully"

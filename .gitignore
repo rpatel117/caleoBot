@@ -6,6 +6,7 @@ yarn-error.log*
 
 # Environment variables
 .env
+config.env
 .env.local
 .env.development.local
 .env.test.local
@@ -94,3 +95,5 @@ Thumbs.db
 # Package files
 *.zip
 *.tar.gz
+
+/src/generated/prisma

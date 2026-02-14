@@ -1,0 +1,44 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.16/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.16",
+  "version": "1.0.0",
+  "id": "7ac8f532-c402-43c4-bcb9-7d18a7184ca0",
+  "packageName": "com.yourcompany.caleo-bot",
+  "developer": {
+    "name": "Caleo",
+    "websiteUrl": "https://yourcompany.com",
+    "privacyUrl": "https://yourcompany.com/privacy",
+    "termsOfUseUrl": "https://yourcompany.com/terms"
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "name": {
+    "short": "Caleo Bot",
+    "full": "Caleo AI Assistant Bot"
+  },
+  "description": {
+    "short": "AI-powered assistant for your team",
+    "full": "Caleo is an AI-powered assistant that helps your team with various tasks and questions. Simply @mention Caleo in any channel or send a direct message to get started."
+  },
+  "accentColor": "#FFFFFF",
+  "bots": [
+    {
+      "botId": "7ac8f532-c402-43c4-bcb9-7d18a7184ca0",
+      "scopes": [
+        "personal"
+      ],
+      "supportsFiles": false,
+      "isNotificationOnly": false,
+      "supportsCalling": false,
+      "supportsVideo": false
+    }
+  ],
+  "permissions": [
+    "identity"
+  ],
+  "validDomains": [
+    "caleo-bot-prod.azurewebsites.net"
+  ]
+}

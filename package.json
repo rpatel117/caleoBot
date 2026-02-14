@@ -1,34 +1,36 @@
 {
   "name": "caleo-bot",
-  "version": "1.0.0",
-  "description": "Caleo Bot for Microsoft Teams",
-  "main": "dist/index.js",
+  "version": "2.0.0",
+  "description": "Caleo - Slack-first multi-provider AI calendar assistant",
+  "main": "dist/slack/index.js",
   "scripts": {
-    "setup": "node setup.js",
-    "start": "node dist/index.js",
-    "dev": "nodemon dist/index.js",
+    "start": "node dist/slack/index.js",
+    "dev": "nodemon dist/slack/index.js",
     "build": "tsc",
-    "package": "npm run build && bestzip caleo-bot.zip manifest/ package.json src/ node_modules/",
-    "ngrok": "npx ngrok http 3978"
+    "db:init": "psql $DATABASE_URL -f src/database/schema.sql",
+    "db:reset": "psql $DATABASE_URL -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' && npm run db:init",
+    "ngrok": "npx ngrok http 3000"
   },
   "keywords": [
-    "microsoft-teams",
-    "bot",
-    "chatbot",
+    "slack",
+    "calendar",
+    "ai-assistant",
     "caleo"
   ],
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {
-    "botbuilder": "^4.21.0",
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@slack/bolt": "^4.2.1",
+    "crypto-js": "^4.2.0",
     "dotenv": "^16.3.1",
-    "node-fetch": "^3.3.2",
-    "restify": "^11.1.0"
+    "googleapis": "^144.0.0",
+    "pg": "^8.16.3"
   },
   "devDependencies": {
+    "@types/crypto-js": "^4.2.2",
     "@types/node": "^20.4.5",
-    "@types/restify": "^8.5.5",
-    "bestzip": "^2.2.1",
+    "@types/pg": "^8.11.6",
     "nodemon": "^3.0.1",
     "typescript": "^5.1.6"
   }

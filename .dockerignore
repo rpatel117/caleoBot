@@ -1,0 +1,10 @@
+node_modules
+src
+archive
+docs
+*.md
+.git
+.gitignore
+config.env
+env.template
+tsconfig.json

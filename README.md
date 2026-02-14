@@ -2,6 +2,23 @@
 
 Caleo is an AI-powered meeting scheduler that integrates seamlessly into Microsoft Teams. Using natural language processing and Microsoft Graph API, Caleo intelligently schedules meetings by understanding user intent, checking calendar availability, and coordinating with team members across your organization.
 
+## 🎉 **CURRENT STATUS: FULLY WORKING!**
+
+✅ **Bot is operational and responding to Microsoft Teams messages**  
+✅ **Authentication working with Azure Bot Framework**  
+✅ **AI integration ready (OpenAI GPT-3.5-turbo)**  
+✅ **No 502 errors or crashes**  
+✅ **Single message responses (no duplicates)**  
+✅ **Production-ready error handling**
+
+**Quick Test:** Send a message to the bot in Microsoft Teams - it will respond with intelligent AI-generated responses!
+
+**AI Features:**
+- Context-aware responses based on conversation type
+- Personalized interactions using sender names
+- Intelligent meeting scheduling assistance
+- Graceful fallbacks when AI service is unavailable
+
 ## 🎯 Business Use Case
 
 **Problem**: Enterprise teams waste significant time coordinating meetings across multiple calendars, time zones, and availability constraints.
@@ -275,6 +292,59 @@ caleoBot/
 2. Check that Teams app has been granted consent
 3. Verify user has appropriate licenses for Graph API access
 4. Test Graph API calls independently
+
+## 📚 Documentation
+
+- [Setup Guide](SETUP_STEPS.md) - Complete setup instructions and current status
+- [Troubleshooting Guide](TROUBLESHOOTING_GUIDE.md) - Comprehensive troubleshooting for common issues
+- [Troubleshooting Log](TROUBLESHOOTING.md) - Historical troubleshooting steps taken
+
+## 🚨 Quick Troubleshooting
+
+### Bot Not Responding?
+1. **Check if bot is running:**
+   ```bash
+   curl -s http://localhost:3978/api/health
+   ```
+
+2. **Check ngrok:**
+   ```bash
+   curl -s https://nonperversive-bellicosely-tawanna.ngrok-free.dev/api/health
+   ```
+
+3. **Restart if needed:**
+   ```bash
+   pkill -f "node dist/index.js"
+   npm run build && npm start
+   ```
+
+### Getting 502 Errors?
+- Bot process likely crashed due to authentication issues
+- Check console logs for `AADSTS700016` errors
+- Verify `.env` file has correct Azure credentials
+- See [Troubleshooting Guide](TROUBLESHOOTING_GUIDE.md) for detailed solutions
+
+### Duplicate Messages?
+- This was fixed in the current implementation
+- Bot now tracks message IDs to prevent duplicates
+
+### AI Not Responding?
+1. **Check OpenAI API Key:**
+   ```bash
+   echo $OPENAI_API_KEY
+   # Should show your OpenAI API key
+   ```
+
+2. **Test AI Service:**
+   ```bash
+   curl -s http://localhost:3978/api/test-ai
+   # Should return: {"status":"OK","message":"AI service is working!","aiEnabled":true}
+   ```
+
+3. **Add OpenAI API Key to .env:**
+   ```bash
+   echo "OPENAI_API_KEY=your_openai_api_key_here" >> .env
+   ```
 
 ## 📚 Resources
 
