@@ -2,7 +2,7 @@ import * as dotenv from 'dotenv';
 dotenv.config({ path: './config.env' });
 
 import * as http from 'http';
-import { getAgentClient } from '../agent/client';
+import { getAgentClient, SlackContext } from '../agent/client';
 import { UserContext, CalendarProviderType } from '../types';
 import { repository } from '../database/repository';
 import { EncryptionService } from '../encryption';
@@ -12,6 +12,10 @@ import { MicrosoftEmailProvider } from '../email/microsoft';
 import { GoogleOAuth } from '../calendar/google/oauth';
 import { GoogleCalendarProvider } from '../calendar/google/provider';
 import { GoogleEmailProvider } from '../email/google';
+import { buildSystemPrompt, DynamicPromptContext, UserPreferences, DayEventsSnapshot } from '../agent/config';
+import { formatEventsForPrompt, computeFreeTimeGaps, detectConflicts } from '../agent/calendar-context';
+import { calculateCostCents, formatBalanceForDisplay, LOW_BALANCE_THRESHOLD_CENTS } from '../billing/usage-tracker';
+import { CalendarEvent } from '../calendar/types';
 
 const { App, ExpressReceiver } = require('@slack/bolt') as {
   App: any;
@@ -84,6 +88,11 @@ function getRedirectUri(): string {
 async function buildProviders(dbUserId: string): Promise<Map<CalendarProviderType, any>> {
   const providers = new Map<CalendarProviderType, any>();
 
+  // First check what tokens are stored in DB
+  const storedTokens = await repository.getTokensByUser(dbUserId);
+  const storedProviders = storedTokens.map((t: any) => t.provider);
+  console.log(`[buildProviders] user=${dbUserId}, stored tokens: [${storedProviders.join(', ') || 'none'}]`);
+
   try {
     const msToken = await microsoftOAuth.getValidAccessToken(dbUserId);
     if (msToken) {
@@ -93,9 +102,12 @@ async function buildProviders(dbUserId: string): Promise<Map<CalendarProviderTyp
         accessToken: msToken,
         providerType: 'microsoft' as CalendarProviderType,
       });
+      console.log('[buildProviders] Microsoft provider loaded successfully');
+    } else if (storedProviders.includes('microsoft')) {
+      console.warn('[buildProviders] Microsoft token stored but getValidAccessToken returned null — token may be expired/revoked');
     }
   } catch (err) {
-    console.error('Failed to load Microsoft provider:', err);
+    console.error('[buildProviders] Failed to load Microsoft provider:', err);
   }
 
   try {
@@ -107,17 +119,22 @@ async function buildProviders(dbUserId: string): Promise<Map<CalendarProviderTyp
         accessToken: gToken,
         providerType: 'google' as CalendarProviderType,
       });
+      console.log('[buildProviders] Google provider loaded successfully');
+    } else if (storedProviders.includes('google')) {
+      console.warn('[buildProviders] Google token stored but getValidAccessToken returned null — token may be expired/revoked');
     }
   } catch (err) {
-    console.error('Failed to load Google provider:', err);
+    console.error('[buildProviders] Failed to load Google provider:', err);
   }
 
+  console.log(`[buildProviders] Active providers: [${Array.from(providers.keys()).join(', ') || 'none'}]`);
   return providers;
 }
 
 async function ensureUser(client: any, slackUserId: string, teamId?: string): Promise<{
   userContext: UserContext;
   dbUserId: string;
+  slackTeamId: string;
 }> {
   let name = slackUserId;
   let email = `${slackUserId}@slack.local`;
@@ -146,6 +163,99 @@ async function ensureUser(client: any, slackUserId: string, teamId?: string): Pr
       timezone: tz,
     },
     dbUserId: user.id,
+    slackTeamId: workspaceExternalId,
+  };
+}
+
+// ---------- Calendar context helpers ----------
+
+/**
+ * Get the UTC timestamps for start/end of a day in a given timezone.
+ * E.g., for America/Chicago (UTC-6), midnight CT on 2026-02-14 = 2026-02-14T06:00:00Z
+ */
+function getTimezoneDay(tz: string, offsetDays: number = 0): { start: Date; end: Date; dateStr: string } {
+  const now = new Date();
+  // Get today's date in the user's timezone
+  let refDate = now;
+  if (offsetDays !== 0) {
+    refDate = new Date(now.getTime() + offsetDays * 24 * 60 * 60 * 1000);
+  }
+  const dateStr = refDate.toLocaleDateString('en-CA', { timeZone: tz }); // YYYY-MM-DD
+
+  // Create midnight UTC on this date
+  const midnightUtc = new Date(`${dateStr}T00:00:00Z`);
+
+  // Calculate TZ offset: format the same instant in UTC and tz, diff them
+  const utcFmt = midnightUtc.toLocaleString('en-US', { timeZone: 'UTC' });
+  const tzFmt = midnightUtc.toLocaleString('en-US', { timeZone: tz });
+  const offsetMs = new Date(utcFmt).getTime() - new Date(tzFmt).getTime();
+
+  // Midnight in user's tz = midnight UTC + offset
+  const start = new Date(midnightUtc.getTime() + offsetMs);
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1);
+  return { start, end, dateStr };
+}
+
+interface DayEvents {
+  dateStr: string;  // YYYY-MM-DD
+  label: string;    // "yesterday", "today", "tomorrow", etc.
+  events: CalendarEvent[];
+}
+
+async function fetchMultiDayEvents(
+  providers: Map<CalendarProviderType, any>,
+  tz: string,
+  daysBack: number = 3,
+  daysForward: number = 3
+): Promise<DayEvents[]> {
+  for (const [, prov] of providers) {
+    if (!prov.calendar || !prov.accessToken) continue;
+    try {
+      // Get the full range: daysBack ago to daysForward from now
+      const rangeStart = getTimezoneDay(tz, -daysBack);
+      const rangeEnd = getTimezoneDay(tz, daysForward);
+      console.log(`[fetchMultiDayEvents] Querying: ${rangeStart.start.toISOString()} to ${rangeEnd.end.toISOString()} (tz=${tz})`);
+      const allEvents = await prov.calendar.getEvents(prov.accessToken, rangeStart.start, rangeEnd.end);
+      console.log(`[fetchMultiDayEvents] Got ${allEvents.length} total events across ${daysBack + daysForward + 1} days`);
+
+      // Bucket events by day
+      const dayLabels: Record<number, string> = {
+        [-3]: '3 days ago', [-2]: '2 days ago', [-1]: 'yesterday',
+        [0]: 'today', [1]: 'tomorrow', [2]: 'in 2 days', [3]: 'in 3 days',
+      };
+
+      const results: DayEvents[] = [];
+      for (let offset = -daysBack; offset <= daysForward; offset++) {
+        const { start, end, dateStr } = getTimezoneDay(tz, offset);
+        const dayEvents = allEvents.filter((e: CalendarEvent) => {
+          const eventStart = new Date(e.start.dateTime);
+          return eventStart >= start && eventStart <= end;
+        });
+        results.push({
+          dateStr,
+          label: dayLabels[offset] || `${Math.abs(offset)} days ${offset > 0 ? 'from now' : 'ago'}`,
+          events: dayEvents,
+        });
+      }
+      return results;
+    } catch (err) {
+      console.error('Failed to fetch multi-day events for prompt:', err);
+    }
+  }
+  return [];
+}
+
+function getWeekEventCount(multiDayEvents: DayEvents[]): number {
+  return multiDayEvents.reduce((sum, day) => sum + day.events.length, 0);
+}
+
+function dbPrefsToPromptPrefs(dbPrefs: any): UserPreferences {
+  return {
+    workHoursStart: dbPrefs.work_hours_start || '09:00',
+    workHoursEnd: dbPrefs.work_hours_end || '17:00',
+    defaultDurationMinutes: dbPrefs.default_duration_minutes || 30,
+    bufferMinutes: dbPrefs.buffer_minutes || 0,
+    preferredProvider: dbPrefs.preferred_provider || undefined,
   };
 }
 
@@ -207,6 +317,9 @@ const httpServer = http.createServer(async (req, res) => {
       const { userId: slackUserId, workspaceId, provider } = stateData;
       const redirectUri = getRedirectUri();
 
+      console.log(`[OAuth Callback] provider=${provider}, redirectUri=${redirectUri}, slackUserId=${slackUserId}`);
+      console.log(`[OAuth Callback] code length=${code.length}, state provider=${provider}`);
+
       let tokens;
       if (provider === 'google') {
         tokens = await googleOAuth.exchangeCode(code, redirectUri);
@@ -265,53 +378,132 @@ async function processUserMessage(args: {
 
   console.log(`Processing message from ${args.userId}: "${normalizedText}"`);
 
-  const { userContext, dbUserId } = await ensureUser(args.client, args.userId, args.teamId);
+  const { userContext, dbUserId, slackTeamId } = await ensureUser(args.client, args.userId, args.teamId);
   console.log(`User ensured: dbUserId=${dbUserId}, name=${userContext.name}`);
 
-  let providers = new Map<CalendarProviderType, any>();
+  // --- Balance gating ---
+  const balance = await repository.getBalance(dbUserId);
+  if (balance.balance_cents <= 0) {
+    await args.client.chat.postMessage({
+      channel: args.channel,
+      thread_ts: args.replyTs ?? args.threadTs,
+      text: `You're out of Caleo credits (balance: ${formatBalanceForDisplay(balance.balance_cents)}). Use \`/caleo-billing\` to add more.`,
+    });
+    return;
+  }
 
-  if (needsCalendarContext(normalizedText)) {
-    providers = await buildProviders(dbUserId);
+  // Always load providers — the agent needs to know what's connected regardless of message content
+  const providers = await buildProviders(dbUserId);
 
-    if (providers.size === 0) {
-      const redirectUri = getRedirectUri();
-      const msUrl = microsoftOAuth.generateAuthUrl(args.userId, userContext.workspaceId, redirectUri);
-      const gUrl = googleOAuth.generateAuthUrl(args.userId, userContext.workspaceId, redirectUri);
+  // Only prompt for auth if the user explicitly asks about calendar stuff and has nothing connected
+  if (providers.size === 0 && needsCalendarContext(normalizedText)) {
+    const redirectUri = getRedirectUri();
+    const msUrl = microsoftOAuth.generateAuthUrl(args.userId, slackTeamId, redirectUri);
+    const gUrl = googleOAuth.generateAuthUrl(args.userId, slackTeamId, redirectUri);
 
-      await args.client.chat.postMessage({
-        channel: args.channel,
-        thread_ts: args.replyTs ?? args.threadTs,
-        text: 'I need calendar access to help with that. Please connect a provider:',
-        blocks: [
-          {
-            type: 'section',
-            text: { type: 'mrkdwn', text: 'I need calendar access to help with that. Please connect a provider:' },
-          },
-          {
-            type: 'actions',
-            elements: [
-              {
-                type: 'button',
-                text: { type: 'plain_text', text: 'Connect Microsoft Outlook' },
-                url: msUrl,
-                action_id: 'connect_microsoft',
-              },
-              {
-                type: 'button',
-                text: { type: 'plain_text', text: 'Connect Google Calendar' },
-                url: gUrl,
-                action_id: 'connect_google',
-              },
-            ],
-          },
-        ],
-      });
-      return;
+    await args.client.chat.postMessage({
+      channel: args.channel,
+      thread_ts: args.replyTs ?? args.threadTs,
+      text: 'I need calendar access to help with that. Please connect a provider:',
+      blocks: [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: 'I need calendar access to help with that. Please connect a provider:' },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Connect Microsoft Outlook' },
+              url: msUrl,
+              action_id: 'connect_microsoft',
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Connect Google Calendar' },
+              url: gUrl,
+              action_id: 'connect_google',
+            },
+          ],
+        },
+      ],
+    });
+    return;
+  }
+
+  // --- Build dynamic system prompt ---
+  let systemPrompt: string | undefined;
+  let conversationId: string | undefined;
+
+  try {
+    const tz = userContext.timezone || 'America/Chicago';
+    const now = new Date();
+    const connectedProviders = Array.from(providers.keys());
+
+    // Load preferences
+    const dbPrefs = await repository.getPreferences(dbUserId);
+    const preferences = dbPrefsToPromptPrefs(dbPrefs);
+
+    // Fetch calendar context if providers available
+    let multiDayEvents: DayEvents[] = [];
+    let todayEvents: CalendarEvent[] = [];
+    let weekEventCount = 0;
+    if (providers.size > 0) {
+      multiDayEvents = await fetchMultiDayEvents(providers, tz, 3, 3);
+      const todayEntry = multiDayEvents.find(d => d.label === 'today');
+      todayEvents = todayEntry?.events || [];
+      weekEventCount = getWeekEventCount(multiDayEvents);
     }
+
+    const formattedEvents = formatEventsForPrompt(todayEvents, tz);
+    const freeTimeToday = computeFreeTimeGaps(todayEvents, tz, preferences.workHoursStart, preferences.workHoursEnd);
+    const upcomingConflicts = detectConflicts(todayEvents, tz);
+
+    // Billing context
+    const isLow = balance.balance_cents <= LOW_BALANCE_THRESHOLD_CENTS;
+    const billingContext = { balanceCents: balance.balance_cents, isLow };
+
+    // Slack thread URL
+    const effectiveThreadTs = args.replyTs ?? args.threadTs;
+    const slackThreadUrl = effectiveThreadTs
+      ? `https://slack.com/archives/${args.channel}/p${effectiveThreadTs.replace('.', '')}`
+      : undefined;
+
+    // Format multi-day events for the prompt
+    const multiDaySnapshots: DayEventsSnapshot[] = multiDayEvents.map(day => ({
+      dateStr: day.dateStr,
+      label: day.label,
+      events: formatEventsForPrompt(day.events, tz),
+    }));
+
+    const promptCtx: DynamicPromptContext = {
+      userName: userContext.name,
+      userEmail: userContext.email,
+      userTimezone: tz,
+      currentTime: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short', timeZone: tz }),
+      currentDate: now.toLocaleDateString('en-CA', { timeZone: tz }),
+      dayOfWeek: now.toLocaleDateString('en-US', { weekday: 'long', timeZone: tz }),
+      connectedProviders,
+      todayEvents: formattedEvents,
+      multiDayEvents: multiDaySnapshots,
+      weekEventCount,
+      upcomingConflicts,
+      freeTimeToday,
+      preferences,
+      billingContext,
+      slackThreadUrl,
+    };
+
+    systemPrompt = buildSystemPrompt(promptCtx);
+  } catch (err) {
+    console.error('Failed to build dynamic prompt, falling back to static:', err);
+    // systemPrompt stays undefined → agent falls back to AGENT_INSTRUCTIONS
   }
 
   // Fetch conversation history from DB
   const conversation = await repository.getOrCreateConversation(dbUserId, args.channel, args.threadTs);
+  conversationId = conversation.id;
   const dbMessages = await repository.getMessages(conversation.id, 20);
   const conversationHistory = dbMessages.map(m => ({ role: m.role, content: m.content }));
 
@@ -323,19 +515,55 @@ async function processUserMessage(args: {
 
   await repository.createMessage(conversation.id, 'user', normalizedText);
 
+  // Build Slack context for local agent
+  const slackContext: SlackContext = {
+    client: args.client,
+    channelId: args.channel,
+    threadTs: args.replyTs ?? args.threadTs,
+  };
+
   console.log('Calling agent...');
-  const response = await agentClient.processMessage(
+  const agentResponse = await agentClient.processMessage(
     normalizedText,
     userContext,
     providers,
     conversationHistory,
-    dbUserId
+    dbUserId,
+    systemPrompt,
+    slackContext
   );
-  console.log(`Agent responded (${response.length} chars)`);
+  console.log(`Agent responded (${agentResponse.text.length} chars, ${agentResponse.totalUsage.inputTokens}+${agentResponse.totalUsage.outputTokens} tokens)`);
 
-  await repository.createMessage(conversation.id, 'assistant', response);
+  await repository.createMessage(conversation.id, 'assistant', agentResponse.text);
 
-  const chunks = splitLongMessage(response);
+  // --- Deduct balance & log usage ---
+  const costCents = calculateCostCents(agentResponse.totalUsage);
+  if (costCents > 0 && conversationId) {
+    try {
+      await repository.deductBalance(dbUserId, costCents);
+      await repository.createUsageLog({
+        userId: dbUserId,
+        conversationId,
+        inputTokens: agentResponse.totalUsage.inputTokens,
+        outputTokens: agentResponse.totalUsage.outputTokens,
+        costCents,
+        toolIterations: agentResponse.toolIterations,
+      });
+    } catch (err) {
+      console.error('Failed to log usage / deduct balance:', err);
+    }
+  }
+
+  // Send response
+  let responseText = agentResponse.text;
+
+  // Low balance warning
+  const updatedBalance = await repository.getBalance(dbUserId);
+  if (updatedBalance.balance_cents > 0 && updatedBalance.balance_cents <= LOW_BALANCE_THRESHOLD_CENTS) {
+    responseText += `\n\n_Your Caleo balance is low (${formatBalanceForDisplay(updatedBalance.balance_cents)}). Use \`/caleo-billing\` to add credits._`;
+  }
+
+  const chunks = splitLongMessage(responseText);
   for (const chunk of chunks) {
     await args.client.chat.postMessage({
       channel: args.channel,
@@ -345,7 +573,7 @@ async function processUserMessage(args: {
   }
 
   // Onboarding hint: if this is the user's first message and they have no calendar connected
-  if (conversationHistory.length === 0 && !needsCalendarContext(normalizedText)) {
+  if (conversationHistory.length === 0 && providers.size === 0) {
     const tokens = await repository.getTokensByUser(dbUserId);
     if (tokens.length === 0) {
       await args.client.chat.postMessage({
@@ -382,7 +610,7 @@ app.command('/caleo', async ({ command, ack, client, body }: any) => {
 // /caleo-auth command
 app.command('/caleo-auth', async ({ command, ack, respond, client, body }: any) => {
   await ack();
-  const { dbUserId, userContext } = await ensureUser(client, command.user_id, body?.team_id);
+  const { dbUserId, userContext, slackTeamId } = await ensureUser(client, command.user_id, body?.team_id);
   const tokens = await repository.getTokensByUser(dbUserId);
   const connectedProviders = tokens.map((t: any) => t.provider);
 
@@ -393,7 +621,7 @@ app.command('/caleo-auth', async ({ command, ack, respond, client, body }: any) 
     elements.push({
       type: 'button',
       text: { type: 'plain_text', text: 'Connect Microsoft Outlook' },
-      url: microsoftOAuth.generateAuthUrl(command.user_id, userContext.workspaceId, redirectUri),
+      url: microsoftOAuth.generateAuthUrl(command.user_id, slackTeamId, redirectUri),
       action_id: 'connect_microsoft',
     });
   }
@@ -402,7 +630,7 @@ app.command('/caleo-auth', async ({ command, ack, respond, client, body }: any) 
     elements.push({
       type: 'button',
       text: { type: 'plain_text', text: 'Connect Google Calendar' },
-      url: googleOAuth.generateAuthUrl(command.user_id, userContext.workspaceId, redirectUri),
+      url: googleOAuth.generateAuthUrl(command.user_id, slackTeamId, redirectUri),
       action_id: 'connect_google',
     });
   }
@@ -425,9 +653,65 @@ app.command('/caleo-auth', async ({ command, ack, respond, client, body }: any) 
   });
 });
 
+// /caleo-billing command
+app.command('/caleo-billing', async ({ command, ack, respond, client, body }: any) => {
+  await ack();
+  try {
+    const { dbUserId } = await ensureUser(client, command.user_id, body?.team_id);
+    const balance = await repository.getBalance(dbUserId);
+
+    const baseUrl = process.env.BILLING_BASE_URL || process.env.NGROK_URL || `http://localhost:${httpPort}`;
+
+    const makeUrl = (amount: number) =>
+      `${baseUrl}/billing/checkout?amount=${amount}&user=${command.user_id}&dbUser=${dbUserId}`;
+
+    await respond({
+      text: `Caleo Billing — Balance: ${formatBalanceForDisplay(balance.balance_cents)}`,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `*Caleo Billing*\n\nCurrent balance: *${formatBalanceForDisplay(balance.balance_cents)}*\nLifetime usage: ${formatBalanceForDisplay(balance.lifetime_spent_cents)}`,
+          },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Add $5' },
+              url: makeUrl(500),
+              action_id: 'billing_add_5',
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Add $10' },
+              url: makeUrl(1000),
+              action_id: 'billing_add_10',
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Add $20' },
+              url: makeUrl(2000),
+              action_id: 'billing_add_20',
+            },
+          ],
+        },
+      ],
+    });
+  } catch (error) {
+    console.error('/caleo-billing error:', error);
+    await respond(`Sorry, something went wrong: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+});
+
 // Handle button action acknowledgment
 app.action('connect_microsoft', async ({ ack }: any) => { await ack(); });
 app.action('connect_google', async ({ ack }: any) => { await ack(); });
+app.action('billing_add_5', async ({ ack }: any) => { await ack(); });
+app.action('billing_add_10', async ({ ack }: any) => { await ack(); });
+app.action('billing_add_20', async ({ ack }: any) => { await ack(); });
 
 // App mentions
 app.event('app_mention', async ({ event, body, client }: any) => {

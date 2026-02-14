@@ -50,7 +50,54 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- User preferences (work hours, defaults, etc.)
+CREATE TABLE IF NOT EXISTS user_preferences (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id) UNIQUE,
+  work_hours_start VARCHAR(10) DEFAULT '09:00',
+  work_hours_end VARCHAR(10) DEFAULT '17:00',
+  default_duration_minutes INTEGER DEFAULT 30,
+  buffer_minutes INTEGER DEFAULT 0,
+  preferred_provider VARCHAR(20),
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- User billing balances
+CREATE TABLE IF NOT EXISTS user_balances (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id) UNIQUE,
+  balance_cents INTEGER DEFAULT 100,
+  lifetime_spent_cents INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Per-conversation usage logs
+CREATE TABLE IF NOT EXISTS usage_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id),
+  conversation_id UUID REFERENCES conversations(id),
+  input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  cost_cents NUMERIC(10,4) NOT NULL,
+  tool_iterations INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Stripe event idempotency
+CREATE TABLE IF NOT EXISTS stripe_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  stripe_event_id VARCHAR(255) UNIQUE NOT NULL,
+  event_type VARCHAR(100) NOT NULL,
+  user_id UUID REFERENCES users(id),
+  amount_cents INTEGER,
+  processed_at TIMESTAMPTZ DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_external_id ON users(external_id);
 CREATE INDEX IF NOT EXISTS idx_oauth_tokens_user_provider ON oauth_tokens(user_id, provider);
 CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_stripe_events_stripe_id ON stripe_events(stripe_event_id);

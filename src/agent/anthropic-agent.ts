@@ -13,10 +13,19 @@ interface ProviderSet {
   providerType: CalendarProviderType;
 }
 
-interface AgentContext {
+export interface AgentContext {
   userContext: UserContext;
   providers: Map<CalendarProviderType, ProviderSet>;
   dbUserId?: string;
+  slackClient?: any;
+  slackChannelId?: string;
+  slackThreadTs?: string;
+}
+
+export interface AgentResponse {
+  text: string;
+  totalUsage: { inputTokens: number; outputTokens: number };
+  toolIterations: number;
 }
 
 const toolDefinitions: Anthropic.Tool[] = [
@@ -185,6 +194,41 @@ const toolDefinitions: Anthropic.Tool[] = [
       properties: {},
       required: []
     }
+  },
+  {
+    name: 'resolve_slack_user',
+    description: 'Resolve a Slack user mention (e.g. <@U12345>) to their name, email, timezone, and title. Use this when the user mentions someone with @ and you need their email for meeting invites.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        slackUserId: { type: 'string', description: 'Slack user ID (e.g. U12345ABC)' }
+      },
+      required: ['slackUserId']
+    }
+  },
+  {
+    name: 'get_preferences',
+    description: 'Get the user\'s preferences including work hours, default meeting duration, buffer time, and preferred provider.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {},
+      required: []
+    }
+  },
+  {
+    name: 'update_preferences',
+    description: 'Update user preferences. Pass only the fields you want to change.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        workHoursStart: { type: 'string', description: 'Work hours start time (e.g. "08:00")' },
+        workHoursEnd: { type: 'string', description: 'Work hours end time (e.g. "17:00")' },
+        defaultDurationMinutes: { type: 'number', description: 'Default meeting duration in minutes' },
+        bufferMinutes: { type: 'number', description: 'Buffer time between meetings in minutes' },
+        preferredProvider: { type: 'string', description: 'Preferred calendar provider', enum: ['microsoft', 'google'] }
+      },
+      required: []
+    }
   }
 ];
 
@@ -200,8 +244,12 @@ export class AnthropicAgent {
   async processMessage(
     userMessage: string,
     context: AgentContext,
-    conversationHistory: Array<{ role: string; content: string }>
-  ): Promise<string> {
+    conversationHistory: Array<{ role: string; content: string }>,
+    systemPrompt?: string
+  ): Promise<AgentResponse> {
+    const totalUsage = { inputTokens: 0, outputTokens: 0 };
+    let toolIterations = 0;
+
     try {
     const messages: Anthropic.MessageParam[] = [];
 
@@ -216,18 +264,24 @@ export class AnthropicAgent {
     // Add current user message
     messages.push({ role: 'user', content: userMessage });
 
+    const system = systemPrompt || AGENT_INSTRUCTIONS;
+
     // Tool use loop
     let response = await this.client.messages.create({
       model: AGENT_CONFIG.model,
       max_tokens: AGENT_CONFIG.maxTokens,
-      system: AGENT_INSTRUCTIONS,
+      system,
       tools: toolDefinitions,
       messages,
     });
 
+    // Accumulate usage
+    totalUsage.inputTokens += response.usage?.input_tokens || 0;
+    totalUsage.outputTokens += response.usage?.output_tokens || 0;
+    console.log(`[Agent] Initial response: stop_reason=${response.stop_reason}, blocks=${response.content.length}`);
+
     // Process tool calls in a loop until we get a final text response
     const MAX_TOOL_ITERATIONS = 10;
-    let toolIterations = 0;
     while (response.stop_reason === 'tool_use') {
       toolIterations++;
       if (toolIterations > MAX_TOOL_ITERATIONS) {
@@ -241,11 +295,17 @@ export class AnthropicAgent {
 
       for (const block of assistantContent) {
         if (block.type === 'tool_use') {
-          const result = await this.executeTool(block.name, block.input as Record<string, any>, context);
+          const toolInput = block.input as Record<string, any>;
+          console.log(`[Tool Call] ${block.name}`, JSON.stringify(toolInput));
+          const result = await this.executeTool(block.name, toolInput, context);
+          const resultStr = JSON.stringify(result);
+          // Log a summary: truncate large results
+          const summary = resultStr.length > 500 ? resultStr.slice(0, 500) + '...' : resultStr;
+          console.log(`[Tool Result] ${block.name}: ${summary}`);
           toolResults.push({
             type: 'tool_result',
             tool_use_id: block.id,
-            content: JSON.stringify(result),
+            content: resultStr,
           });
         }
       }
@@ -255,30 +315,53 @@ export class AnthropicAgent {
       response = await this.client.messages.create({
         model: AGENT_CONFIG.model,
         max_tokens: AGENT_CONFIG.maxTokens,
-        system: AGENT_INSTRUCTIONS,
+        system,
         tools: toolDefinitions,
         messages,
       });
+
+      // Accumulate usage
+      totalUsage.inputTokens += response.usage?.input_tokens || 0;
+      totalUsage.outputTokens += response.usage?.output_tokens || 0;
     }
 
     // Extract text from final response
     const textBlocks = response.content.filter(
       (b): b is Anthropic.TextBlock => b.type === 'text'
     );
-    return textBlocks.map((b) => b.text).join('\n') || 'I was unable to generate a response.';
+    const text = textBlocks.map((b) => b.text).join('\n') || 'I was unable to generate a response.';
+
+    return { text, totalUsage, toolIterations };
     } catch (error: any) {
       console.error('Anthropic API error:', error?.message || error);
+      let text: string;
       if (error?.status === 400 && error?.message?.includes('credit balance')) {
-        return 'Caleo is temporarily unavailable: the Anthropic API account needs credits. Please check billing at console.anthropic.com.';
+        text = 'Caleo is temporarily unavailable: the Anthropic API account needs credits. Please check billing at console.anthropic.com.';
+      } else if (error?.status === 401) {
+        text = 'Caleo configuration error: invalid Anthropic API key.';
+      } else if (error?.status === 429) {
+        text = 'Caleo is rate-limited right now. Please try again in a moment.';
+      } else {
+        text = `Sorry, I encountered an error processing your request: ${error?.message || 'Unknown error'}`;
       }
-      if (error?.status === 401) {
-        return 'Caleo configuration error: invalid Anthropic API key.';
-      }
-      if (error?.status === 429) {
-        return 'Caleo is rate-limited right now. Please try again in a moment.';
-      }
-      return `Sorry, I encountered an error processing your request: ${error?.message || 'Unknown error'}`;
+      return { text, totalUsage, toolIterations };
     }
+  }
+
+  private getTimezoneDay(tz: string, offsetDays: number = 0): { start: Date; end: Date } {
+    const now = new Date();
+    let refDate = now;
+    if (offsetDays !== 0) {
+      refDate = new Date(now.getTime() + offsetDays * 24 * 60 * 60 * 1000);
+    }
+    const dateStr = refDate.toLocaleDateString('en-CA', { timeZone: tz }); // YYYY-MM-DD
+    const midnightUtc = new Date(`${dateStr}T00:00:00Z`);
+    const utcFmt = midnightUtc.toLocaleString('en-US', { timeZone: 'UTC' });
+    const tzFmt = midnightUtc.toLocaleString('en-US', { timeZone: tz });
+    const offsetMs = new Date(utcFmt).getTime() - new Date(tzFmt).getTime();
+    const start = new Date(midnightUtc.getTime() + offsetMs);
+    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1);
+    return { start, end };
   }
 
   private getProvider(context: AgentContext, requestedProvider?: string): ProviderSet | null {
@@ -352,9 +435,7 @@ export class AnthropicAgent {
         if (!provider?.calendar || !provider.accessToken) {
           return { events: [], error: this.getProviderError(context, input.provider) };
         }
-        const now = new Date();
-        const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+        const { start: startOfDay, end: endOfDay } = this.getTimezoneDay(tz);
         try {
           const events = await provider.calendar.getEvents(provider.accessToken, startOfDay, endOfDay);
           return { events: events.map(e => this.formatEvent(e, tz)), count: events.length };
@@ -368,12 +449,10 @@ export class AnthropicAgent {
         if (!provider?.calendar || !provider.accessToken) {
           return { events: [], error: this.getProviderError(context, input.provider) };
         }
-        const now = new Date();
-        const startOfWeek = new Date(now);
-        startOfWeek.setDate(now.getDate() - now.getDay());
-        startOfWeek.setHours(0, 0, 0, 0);
-        const endOfWeek = new Date(startOfWeek);
-        endOfWeek.setDate(startOfWeek.getDate() + 7);
+        const { start: todayStart } = this.getTimezoneDay(tz);
+        const dayOfWeek = todayStart.getDay();
+        const startOfWeek = new Date(todayStart.getTime() - dayOfWeek * 24 * 60 * 60 * 1000);
+        const endOfWeek = new Date(startOfWeek.getTime() + 7 * 24 * 60 * 60 * 1000);
         try {
           const events = await provider.calendar.getEvents(provider.accessToken, startOfWeek, endOfWeek);
           return { events: events.map(e => this.formatEvent(e, tz)), count: events.length };
@@ -405,13 +484,20 @@ export class AnthropicAgent {
           return { success: false, error: this.getProviderError(context, input.provider) };
         }
         try {
+          let eventBody = input.body || '';
+          if (context.slackChannelId && context.slackThreadTs) {
+            const threadLink = `https://slack.com/archives/${context.slackChannelId}/p${context.slackThreadTs.replace('.', '')}`;
+            eventBody = eventBody
+              ? `${eventBody}\n\nScheduled from Slack: ${threadLink}`
+              : `Scheduled from Slack: ${threadLink}`;
+          }
           const event = await provider.calendar.createEvent(provider.accessToken, {
             subject: input.subject,
             start: new Date(input.startTime),
             end: new Date(input.endTime),
             attendees: input.attendees || [],
             location: input.location,
-            body: input.body,
+            body: eventBody,
             isOnlineMeeting: input.isOnlineMeeting ?? true,
             timezone: tz,
           });
@@ -530,6 +616,55 @@ export class AnthropicAgent {
           return { providers: [], message: 'No providers connected. Use /caleo-auth to connect Microsoft or Google.' };
         }
         return { providers: connected };
+      }
+
+      case 'resolve_slack_user': {
+        if (!context.slackClient) {
+          return { error: 'Slack user resolution is not available in this mode. Ask the user for the email address directly.' };
+        }
+        try {
+          const userInfo = await context.slackClient.users.info({ user: input.slackUserId });
+          const profile = userInfo?.user?.profile || {};
+          return {
+            name: userInfo?.user?.real_name || userInfo?.user?.name || input.slackUserId,
+            email: profile?.email || null,
+            timezone: userInfo?.user?.tz || null,
+            title: profile?.title || null,
+          };
+        } catch (error: any) {
+          return { error: `Could not resolve Slack user ${input.slackUserId}: ${error?.message || 'Unknown error'}` };
+        }
+      }
+
+      case 'get_preferences': {
+        if (!context.dbUserId) {
+          return { error: 'User not found in database.' };
+        }
+        try {
+          const prefs = await repository.getPreferences(context.dbUserId);
+          return prefs;
+        } catch (error: any) {
+          return { error: `Failed to load preferences: ${error?.message || 'Unknown error'}` };
+        }
+      }
+
+      case 'update_preferences': {
+        if (!context.dbUserId) {
+          return { error: 'User not found in database.' };
+        }
+        try {
+          const updates: Record<string, any> = {};
+          if (input.workHoursStart !== undefined) updates.work_hours_start = input.workHoursStart;
+          if (input.workHoursEnd !== undefined) updates.work_hours_end = input.workHoursEnd;
+          if (input.defaultDurationMinutes !== undefined) updates.default_duration_minutes = input.defaultDurationMinutes;
+          if (input.bufferMinutes !== undefined) updates.buffer_minutes = input.bufferMinutes;
+          if (input.preferredProvider !== undefined) updates.preferred_provider = input.preferredProvider;
+
+          const updated = await repository.updatePreferences(context.dbUserId, updates);
+          return { success: true, preferences: updated };
+        } catch (error: any) {
+          return { success: false, error: `Failed to update preferences: ${error?.message || 'Unknown error'}` };
+        }
       }
 
       default:

@@ -9,16 +9,20 @@ export class GoogleOAuth implements OAuthProvider {
   private encryption: EncryptionService;
 
   constructor() {
-    this.clientId = process.env.GOOGLE_CLIENT_ID || '';
-    this.clientSecret = process.env.GOOGLE_CLIENT_SECRET || '';
+    this.clientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
+    this.clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
     this.encryption = new EncryptionService();
 
     if (!this.clientId || !this.clientSecret) {
-      console.warn('Google Client ID or Secret not configured');
+      console.warn('[Google OAuth] Client ID or Secret not configured');
+    } else {
+      console.log(`[Google OAuth] Initialized — client_id: ${this.clientId.slice(0, 8)}...${this.clientId.slice(-15)} (len=${this.clientId.length}), secret len=${this.clientSecret.length}`);
     }
   }
 
   generateAuthUrl(userId: string, workspaceId: string, redirectUri: string): string {
+    console.log(`[Google OAuth] Generating auth URL — redirect_uri: ${redirectUri}, client_id len=${this.clientId.length}`);
+
     const state = Buffer.from(JSON.stringify({
       userId,
       workspaceId,
@@ -44,20 +48,50 @@ export class GoogleOAuth implements OAuthProvider {
   }
 
   async exchangeCode(code: string, redirectUri: string): Promise<TokenSet> {
+    // --- Diagnostic logging (redacted) for debugging invalid_client ---
+    const redact = (s: string) => s.length > 16 ? `${s.slice(0, 8)}...${s.slice(-8)}` : `${s.slice(0, 4)}***`;
+    console.log('[Google OAuth] Token exchange diagnostics:');
+    console.log(`  client_id: ${redact(this.clientId)} (len=${this.clientId.length})`);
+    console.log(`  client_secret: len=${this.clientSecret.length}, starts="${this.clientSecret.slice(0, 6)}"`);
+    console.log(`  redirect_uri: ${redirectUri}`);
+    console.log(`  code: ${redact(code)} (len=${code.length})`);
+    console.log(`  grant_type: authorization_code`);
+    console.log(`  Content-Type: application/x-www-form-urlencoded`);
+    console.log(`  env source: GOOGLE_CLIENT_ID=${process.env.GOOGLE_CLIENT_ID ? 'SET' : 'UNSET'}, GOOGLE_CLIENT_SECRET=${process.env.GOOGLE_CLIENT_SECRET ? 'SET' : 'UNSET'}`);
+
+    // Check for common env var issues
+    if (this.clientId !== this.clientId.trim()) {
+      console.warn('[Google OAuth] WARNING: client_id has leading/trailing whitespace!');
+    }
+    if (this.clientSecret !== this.clientSecret.trim()) {
+      console.warn('[Google OAuth] WARNING: client_secret has leading/trailing whitespace!');
+    }
+    if (this.clientSecret.startsWith('"') || this.clientSecret.endsWith('"')) {
+      console.warn('[Google OAuth] WARNING: client_secret contains quote characters — likely misconfigured env var');
+    }
+    if (!this.clientId || !this.clientSecret) {
+      console.error('[Google OAuth] ERROR: client_id or client_secret is empty at exchange time!');
+    }
+
+    const body = new URLSearchParams({
+      client_id: this.clientId,
+      client_secret: this.clientSecret,
+      code,
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code',
+    });
+
     const response = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: this.clientId,
-        client_secret: this.clientSecret,
-        code,
-        redirect_uri: redirectUri,
-        grant_type: 'authorization_code',
-      }),
+      body,
     });
 
     if (!response.ok) {
       const errorText = await response.text();
+      console.error(`[Google OAuth] Token exchange FAILED: ${response.status}`);
+      console.error(`[Google OAuth] Response body: ${errorText}`);
+      console.error(`[Google OAuth] Request body (redacted): client_id=${redact(this.clientId)}&client_secret=REDACTED(len=${this.clientSecret.length})&code=${redact(code)}&redirect_uri=${redirectUri}&grant_type=authorization_code`);
       throw new Error(`Google token exchange failed: ${response.status} - ${errorText}`);
     }
 

@@ -1,7 +1,13 @@
-import { AnthropicAgent } from './anthropic-agent';
+import { AnthropicAgent, AgentResponse } from './anthropic-agent';
 import { UserContext, CalendarProviderType } from '../types';
 import { CalendarProvider } from '../calendar/types';
 import { EmailProvider } from '../email/types';
+
+export interface SlackContext {
+  client: any;
+  channelId: string;
+  threadTs?: string;
+}
 
 export interface IAgentClient {
   processMessage(
@@ -14,8 +20,10 @@ export interface IAgentClient {
       providerType: CalendarProviderType;
     }>,
     conversationHistory?: Array<{ role: string; content: string }>,
-    dbUserId?: string
-  ): Promise<string>;
+    dbUserId?: string,
+    systemPrompt?: string,
+    slackContext?: SlackContext
+  ): Promise<AgentResponse>;
 }
 
 export class LocalAgentClient implements IAgentClient {
@@ -35,14 +43,19 @@ export class LocalAgentClient implements IAgentClient {
       providerType: CalendarProviderType;
     }>,
     conversationHistory: Array<{ role: string; content: string }> = [],
-    dbUserId?: string
-  ): Promise<string> {
+    dbUserId?: string,
+    systemPrompt?: string,
+    slackContext?: SlackContext
+  ): Promise<AgentResponse> {
     console.log('Using LOCAL agent service (Anthropic)');
     return this.agent.processMessage(userMessage, {
       userContext,
       providers,
       dbUserId,
-    }, conversationHistory);
+      slackClient: slackContext?.client,
+      slackChannelId: slackContext?.channelId,
+      slackThreadTs: slackContext?.threadTs,
+    }, conversationHistory, systemPrompt);
   }
 }
 
@@ -63,8 +76,10 @@ export class RemoteAgentClient implements IAgentClient {
       providerType: CalendarProviderType;
     }>,
     conversationHistory: Array<{ role: string; content: string }> = [],
-    dbUserId?: string
-  ): Promise<string> {
+    _dbUserId?: string,
+    systemPrompt?: string,
+    _slackContext?: SlackContext
+  ): Promise<AgentResponse> {
     console.log('Using REMOTE agent service (AWS Lambda)');
 
     // Collect access tokens from providers
@@ -87,6 +102,7 @@ export class RemoteAgentClient implements IAgentClient {
           userContext,
           providerTokens,
           conversationHistory,
+          systemPrompt,
         }),
       });
 
@@ -100,10 +116,18 @@ export class RemoteAgentClient implements IAgentClient {
         throw new Error(result.error || 'Remote agent returned error');
       }
 
-      return result.response || 'I was unable to generate a response.';
+      return {
+        text: result.response || 'I was unable to generate a response.',
+        totalUsage: result.totalUsage || { inputTokens: 0, outputTokens: 0 },
+        toolIterations: result.toolIterations || 0,
+      };
     } catch (error) {
       console.error('Remote agent client error:', error);
-      return `I'm experiencing technical difficulties with the remote AI service. Please try again. Error: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      return {
+        text: `I'm experiencing technical difficulties with the remote AI service. Please try again. Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        totalUsage: { inputTokens: 0, outputTokens: 0 },
+        toolIterations: 0,
+      };
     }
   }
 }

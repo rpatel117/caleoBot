@@ -189,6 +189,154 @@ export class Repository {
     return result.rows.reverse();
   }
 
+  // ---------- Preferences ----------
+
+  async getPreferences(userId: string): Promise<any> {
+    const result = await pool.query(
+      `SELECT * FROM user_preferences WHERE user_id = $1`,
+      [userId]
+    );
+    if (result.rows[0]) return result.rows[0];
+    // Return defaults if no row exists
+    return {
+      user_id: userId,
+      work_hours_start: '09:00',
+      work_hours_end: '17:00',
+      default_duration_minutes: 30,
+      buffer_minutes: 0,
+      preferred_provider: null,
+    };
+  }
+
+  async updatePreferences(userId: string, updates: Record<string, any>): Promise<any> {
+    // Build SET clause dynamically from provided updates
+    const columns = ['user_id'];
+    const values: any[] = [userId];
+    const placeholders = ['$1'];
+    const setClauses: string[] = ['updated_at = now()'];
+    let idx = 2;
+
+    const allowedFields = ['work_hours_start', 'work_hours_end', 'default_duration_minutes', 'buffer_minutes', 'preferred_provider'];
+
+    for (const field of allowedFields) {
+      if (updates[field] !== undefined) {
+        columns.push(field);
+        values.push(updates[field]);
+        placeholders.push(`$${idx}`);
+        setClauses.push(`${field} = $${idx}`);
+        idx++;
+      }
+    }
+
+    const result = await pool.query(
+      `INSERT INTO user_preferences (${columns.join(', ')})
+       VALUES (${placeholders.join(', ')})
+       ON CONFLICT (user_id) DO UPDATE SET ${setClauses.join(', ')}
+       RETURNING *`,
+      values
+    );
+    return result.rows[0];
+  }
+
+  // ---------- Balances ----------
+
+  async getBalance(userId: string): Promise<{ balance_cents: number; lifetime_spent_cents: number }> {
+    const result = await pool.query(
+      `SELECT * FROM user_balances WHERE user_id = $1`,
+      [userId]
+    );
+    if (result.rows[0]) {
+      return {
+        balance_cents: result.rows[0].balance_cents,
+        lifetime_spent_cents: result.rows[0].lifetime_spent_cents,
+      };
+    }
+    // Auto-create row with $1.00 free starting balance
+    const inserted = await pool.query(
+      `INSERT INTO user_balances (user_id, balance_cents, lifetime_spent_cents)
+       VALUES ($1, 100, 0)
+       ON CONFLICT (user_id) DO NOTHING
+       RETURNING *`,
+      [userId]
+    );
+    if (inserted.rows[0]) {
+      return {
+        balance_cents: inserted.rows[0].balance_cents,
+        lifetime_spent_cents: inserted.rows[0].lifetime_spent_cents,
+      };
+    }
+    // Race condition: another process inserted — re-read
+    const reread = await pool.query(
+      `SELECT * FROM user_balances WHERE user_id = $1`,
+      [userId]
+    );
+    return {
+      balance_cents: reread.rows[0]?.balance_cents ?? 100,
+      lifetime_spent_cents: reread.rows[0]?.lifetime_spent_cents ?? 0,
+    };
+  }
+
+  async creditBalance(userId: string, amountCents: number): Promise<void> {
+    await pool.query(
+      `INSERT INTO user_balances (user_id, balance_cents, lifetime_spent_cents)
+       VALUES ($1, 100 + $2, 0)
+       ON CONFLICT (user_id) DO UPDATE
+       SET balance_cents = user_balances.balance_cents + $2,
+           updated_at = now()`,
+      [userId, amountCents]
+    );
+  }
+
+  async deductBalance(userId: string, amountCents: number): Promise<void> {
+    const rounded = Math.ceil(amountCents);
+    await pool.query(
+      `UPDATE user_balances
+       SET balance_cents = balance_cents - $2,
+           lifetime_spent_cents = lifetime_spent_cents + $2,
+           updated_at = now()
+       WHERE user_id = $1`,
+      [userId, rounded]
+    );
+  }
+
+  // ---------- Usage logs ----------
+
+  async createUsageLog(params: {
+    userId: string;
+    conversationId: string;
+    inputTokens: number;
+    outputTokens: number;
+    costCents: number;
+    toolIterations: number;
+  }): Promise<any> {
+    const result = await pool.query(
+      `INSERT INTO usage_logs (user_id, conversation_id, input_tokens, output_tokens, cost_cents, tool_iterations)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [params.userId, params.conversationId, params.inputTokens, params.outputTokens, params.costCents, params.toolIterations]
+    );
+    return result.rows[0];
+  }
+
+  // ---------- Stripe event idempotency ----------
+
+  async checkStripeEventProcessed(stripeEventId: string): Promise<boolean> {
+    const result = await pool.query(
+      `SELECT id FROM stripe_events WHERE stripe_event_id = $1`,
+      [stripeEventId]
+    );
+    return result.rows.length > 0;
+  }
+
+  async markStripeEventProcessed(stripeEventId: string, eventType: string, userId: string, amountCents: number): Promise<void> {
+    await pool.query(
+      `INSERT INTO stripe_events (stripe_event_id, event_type, user_id, amount_cents)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (stripe_event_id) DO NOTHING`,
+      [stripeEventId, eventType, userId, amountCents]
+    );
+  }
+
   // Health check
   async testConnection(): Promise<boolean> {
     try {

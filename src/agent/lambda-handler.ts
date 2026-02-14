@@ -38,6 +38,7 @@ export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
       userContext,
       providerTokens,
       conversationHistory,
+      systemPrompt,
     } = JSON.parse(event.body);
 
     if (!userMessage || !userContext) {
@@ -69,16 +70,22 @@ export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
       });
     }
 
-    const response = await agent.processMessage(
+    const agentResponse = await agent.processMessage(
       userMessage,
       { userContext, providers },
-      conversationHistory || []
+      conversationHistory || [],
+      systemPrompt
     );
 
     return {
       statusCode: 200,
       headers: corsHeaders,
-      body: JSON.stringify({ success: true, response }),
+      body: JSON.stringify({
+        success: true,
+        response: agentResponse.text,
+        totalUsage: agentResponse.totalUsage,
+        toolIterations: agentResponse.toolIterations,
+      }),
     };
   } catch (error) {
     console.error('Lambda handler error:', error);

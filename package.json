@@ -25,7 +25,8 @@
     "crypto-js": "^4.2.0",
     "dotenv": "^16.3.1",
     "googleapis": "^144.0.0",
-    "pg": "^8.16.3"
+    "pg": "^8.16.3",
+    "stripe": "^17.7.0"
   },
   "devDependencies": {
     "@types/crypto-js": "^4.2.2",
