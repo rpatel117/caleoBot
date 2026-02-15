@@ -76,6 +76,7 @@ export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
 
     // Build lightweight Slack client using fetch (no @slack/web-api needed)
     const slackClient = slackBotToken ? createSlackClient(slackBotToken) : undefined;
+    console.log(`[Lambda] Processing: "${userMessage.slice(0, 80)}", provider(s): ${Object.keys(providerTokens || {}).join(',') || 'none'}, slackClient: ${!!slackClient}, dbUserId: ${!!dbUserId}`);
 
     const agentResponse = await agent.processMessage(
       userMessage,

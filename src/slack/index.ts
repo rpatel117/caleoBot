@@ -363,6 +363,30 @@ const httpServer = http.createServer(async (req, res) => {
   res.end('Not found');
 });
 
+// Contextual processing message based on user intent
+function getProcessingMessage(text: string): string {
+  const lower = text.toLowerCase();
+  if (/\b(schedule|set up|book|create)\b.*\b(meeting|call|sync|event)\b/.test(lower)) {
+    return 'Scheduling a meeting...';
+  }
+  if (/\b(find|look\s?up|search|who\s+is)\b/.test(lower) && /\b[A-Z][a-z]+\b/.test(text)) {
+    return 'Searching your organization...';
+  }
+  if (/\b(cancel|delete|remove)\b.*\b(meeting|event|call)\b/.test(lower)) {
+    return 'Looking up the meeting...';
+  }
+  if (/\b(reschedule|move|change|update)\b.*\b(meeting|event|call|time)\b/.test(lower)) {
+    return 'Checking your calendar...';
+  }
+  if (/\b(free|available|availability|open|busy)\b/.test(lower)) {
+    return 'Checking availability...';
+  }
+  if (/\b(today|tomorrow|this week|next week|calendar|agenda|schedule)\b/.test(lower)) {
+    return 'Pulling up your calendar...';
+  }
+  return 'Working on it...';
+}
+
 // Message processing
 async function processUserMessage(args: {
   client: any;
@@ -507,10 +531,11 @@ async function processUserMessage(args: {
   const dbMessages = await repository.getMessages(conversation.id, 20);
   const conversationHistory = dbMessages.map(m => ({ role: m.role, content: m.content }));
 
+  const processingText = getProcessingMessage(normalizedText);
   await args.client.chat.postMessage({
     channel: args.channel,
     thread_ts: args.replyTs ?? args.threadTs,
-    text: 'Caleo is processing your request...',
+    text: processingText,
   });
 
   await repository.createMessage(conversation.id, 'user', normalizedText);

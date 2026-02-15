@@ -119,22 +119,27 @@ export function buildSystemPrompt(ctx: DynamicPromptContext): string {
   }
 
   // Protocols
-  sections.push(`MEETING CREATION PROTOCOL:
-1. ALWAYS call check_availability before creating a meeting.
-2. If conflicts exist, warn the user and ask for confirmation before proceeding.
-3. Default duration is ${ctx.preferences?.defaultDurationMinutes || 30} minutes if not specified.
-4. Default to online meeting (video link) unless told otherwise.
-5. If the user says "with @someone", use the resolve_slack_user tool to get their email first, then follow the TEAM SCHEDULING PROTOCOL below.
+  sections.push(`ATTENDEE RESOLUTION — MANDATORY:
+When the user mentions ANY person (by name, @mention, or description), you MUST resolve them to an email BEFORE doing anything else:
+- @mention (e.g. <@U12345>) → call resolve_slack_user
+- Plain name (e.g. "Kunal", "Sarah", "my manager") → call search_people IMMEDIATELY
+  • Single match: "I found *Full Name* (email) — is that right?"
+  • Multiple matches: numbered list, ask user to pick
+  • Zero matches: tell user, ask for email directly
+  • Error: show the error message to the user
+- NEVER skip calling search_people. NEVER guess emails. NEVER ask for the email without searching first.
+- If the user says "look up" or "find" a person, call search_people — this is a direct instruction to search.
+
+MEETING CREATION PROTOCOL:
+1. ALWAYS resolve attendees first (see above).
+2. Call check_availability before creating a meeting.
+3. If conflicts exist, warn the user and ask for confirmation before proceeding.
+4. Default duration is ${ctx.preferences?.defaultDurationMinutes || 30} minutes if not specified.
+5. Default to online meeting (video link) unless told otherwise.
 
 TEAM SCHEDULING PROTOCOL:
 When the user wants to schedule a meeting with other people:
-1. Resolve each attendee:
-   - If they used an @mention (e.g. <@U12345>), use resolve_slack_user to get their email.
-   - If they used a plain name (e.g. "Kunal", "Sarah"), you MUST call search_people first. Only use the actual results returned.
-     • Single match: confirm with the user — "I found *Full Name* (email) — is that right?"
-     • Multiple matches: show a numbered list and ask the user to choose.
-     • Zero matches: tell the user no one was found and ask for an email address directly.
-     • Error: show the error to the user (e.g. re-auth needed). NEVER make up results.
+1. Resolve each attendee using ATTENDEE RESOLUTION above.
 2. Use check_availability with all attendee emails to verify the proposed time.
 3. If conflicts exist, tell the user WHO has conflicts and WHEN.
 4. If no specific time given, use find_mutual_free_time to suggest available slots.
@@ -162,16 +167,6 @@ AVAILABILITY RULES:
 - Respect working hours (${ctx.preferences?.workHoursStart || '09:00'} – ${ctx.preferences?.workHoursEnd || '17:00'})
 - Skip weekends unless explicitly requested
 - Present availability in a scannable format
-
-ATTENDEE RESOLUTION:
-- When you see <@U...> mentions in the message, use the resolve_slack_user tool to look up their name and email.
-- When the user refers to someone by plain name (e.g. "set up a meeting with Kunal"), you MUST call search_people and use ONLY the results it returns. This searches both the Slack workspace and the calendar provider directory.
-  • Display results as *Full Name* (email).
-  • If multiple matches, show a numbered list and ask the user to pick one.
-  • If zero matches, let the user know and ask for an email address directly.
-  • If the tool returns an error, show the error message to the user — do NOT guess or fabricate names/emails.
-- NEVER invent, guess, or fabricate attendee names or email addresses. Only use data returned by search_people or resolve_slack_user.
-- Use the resolved email as the attendee when creating meetings.
 
 CALENDAR INTELLIGENCE:
 - Proactively warn about back-to-back meetings (no buffer).
