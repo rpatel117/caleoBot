@@ -103,6 +103,10 @@ export class RemoteAgentClient implements IAgentClient {
           providerTokens,
           conversationHistory,
           systemPrompt,
+          dbUserId: _dbUserId,
+          slackBotToken: process.env.SLACK_BOT_TOKEN,
+          slackChannelId: _slackContext?.channelId,
+          slackThreadTs: _slackContext?.threadTs,
         }),
       });
 

@@ -39,6 +39,10 @@ export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
       providerTokens,
       conversationHistory,
       systemPrompt,
+      dbUserId,
+      slackBotToken,
+      slackChannelId,
+      slackThreadTs,
     } = JSON.parse(event.body);
 
     if (!userMessage || !userContext) {
@@ -70,9 +74,19 @@ export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
       });
     }
 
+    // Build lightweight Slack client using fetch (no @slack/web-api needed)
+    const slackClient = slackBotToken ? createSlackClient(slackBotToken) : undefined;
+
     const agentResponse = await agent.processMessage(
       userMessage,
-      { userContext, providers },
+      {
+        userContext,
+        providers,
+        dbUserId,
+        slackClient,
+        slackChannelId,
+        slackThreadTs,
+      },
       conversationHistory || [],
       systemPrompt
     );
@@ -98,4 +112,33 @@ export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
       }),
     };
   }
+}
+
+/**
+ * Lightweight Slack API client using fetch — avoids needing @slack/web-api in Lambda.
+ * Implements the minimal interface used by resolve_slack_user and searchPeopleSlack.
+ */
+function createSlackClient(botToken: string) {
+  const slackApi = async (method: string, params: Record<string, string> = {}) => {
+    const url = new URL(`https://slack.com/api/${method}`);
+    for (const [k, v] of Object.entries(params)) {
+      url.searchParams.set(k, v);
+    }
+    const res = await fetch(url.toString(), {
+      headers: { 'Authorization': `Bearer ${botToken}` },
+    });
+    return res.json() as Promise<any>;
+  };
+
+  return {
+    users: {
+      list: (params: any = {}) => slackApi('users.list', {
+        ...(params.limit ? { limit: String(params.limit) } : {}),
+        ...(params.cursor ? { cursor: params.cursor } : {}),
+      }),
+      info: (params: any = {}) => slackApi('users.info', {
+        user: params.user,
+      }),
+    },
+  };
 }
