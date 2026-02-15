@@ -224,6 +224,22 @@ const toolDefinitions: Anthropic.Tool[] = [
     }
   },
   {
+    name: 'search_people',
+    description: 'Search the organization directory for people by name. Use this when the user refers to someone by plain name (e.g. "Kunal", "Sarah from marketing") instead of an @mention. Results are ranked by relevance (most contacted first). Returns name and email for each match.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: 'Name or partial name to search for (e.g. "Kunal", "Sarah")' },
+        provider: {
+          type: 'string',
+          description: 'Calendar provider to search against. If omitted, uses the first connected provider.',
+          enum: ['microsoft', 'google']
+        }
+      },
+      required: ['query']
+    }
+  },
+  {
     name: 'get_preferences',
     description: 'Get the user\'s preferences including work hours, default meeting duration, buffer time, and preferred provider.',
     input_schema: {
@@ -745,6 +761,27 @@ export class AnthropicAgent {
         }
       }
 
+      case 'search_people': {
+        const provider = this.getProvider(context, input.provider);
+        if (!provider?.accessToken) {
+          return { results: [], error: this.getProviderError(context, input.provider) };
+        }
+        try {
+          if (provider.providerType === 'microsoft') {
+            return await this.searchPeopleMicrosoft(provider.accessToken, input.query);
+          } else if (provider.providerType === 'google') {
+            return await this.searchPeopleGoogle(provider.accessToken, input.query);
+          }
+          return { results: [], error: `People search is not supported for provider: ${provider.providerType}` };
+        } catch (error: any) {
+          const status = error?.status || error?.response?.status;
+          if (status === 401 || status === 403) {
+            return { results: [], error: 'People search requires updated permissions. Please run /caleo-auth to reconnect with the new scopes.' };
+          }
+          return { results: [], error: this.formatApiError(error, provider) };
+        }
+      }
+
       case 'get_preferences': {
         if (!context.dbUserId) {
           return { error: 'User not found in database.' };
@@ -779,6 +816,64 @@ export class AnthropicAgent {
       default:
         return { error: `Unknown tool: ${name}` };
     }
+  }
+
+  private async searchPeopleMicrosoft(accessToken: string, query: string): Promise<any> {
+    const url = `https://graph.microsoft.com/v1.0/me/people?$search="${encodeURIComponent(query)}"&$top=5`;
+    const response = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${accessToken}` },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      const error: any = new Error(`Microsoft People search failed: ${response.status} - ${errorText}`);
+      error.status = response.status;
+      throw error;
+    }
+
+    const data = await response.json() as any;
+    const results = (data.value || [])
+      .map((person: any) => {
+        const email = person.scoredEmailAddresses?.[0]?.address || null;
+        return {
+          name: person.displayName || 'Unknown',
+          email,
+        };
+      })
+      .filter((p: any) => p.email);
+
+    return { results };
+  }
+
+  private async searchPeopleGoogle(accessToken: string, query: string): Promise<any> {
+    const params = new URLSearchParams({
+      query,
+      readMask: 'names,emailAddresses',
+      sources: 'DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE',
+      pageSize: '5',
+    });
+    const url = `https://people.googleapis.com/v1/people:searchDirectoryPeople?${params.toString()}`;
+    const response = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${accessToken}` },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      const error: any = new Error(`Google People search failed: ${response.status} - ${errorText}`);
+      error.status = response.status;
+      throw error;
+    }
+
+    const data = await response.json() as any;
+    const results = (data.people || [])
+      .map((person: any) => {
+        const name = person.names?.[0]?.displayName || 'Unknown';
+        const email = person.emailAddresses?.[0]?.value || null;
+        return { name, email };
+      })
+      .filter((p: any) => p.email);
+
+    return { results };
   }
 
   private formatEvent(event: any, timezone: string): any {

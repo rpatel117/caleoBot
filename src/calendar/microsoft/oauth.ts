@@ -29,6 +29,7 @@ export class MicrosoftOAuth implements OAuthProvider {
       'https://graph.microsoft.com/Calendars.ReadWrite',
       'https://graph.microsoft.com/User.Read',
       'https://graph.microsoft.com/Mail.ReadWrite',
+      'https://graph.microsoft.com/People.Read',
       'offline_access',
     ].join(' ');
 
@@ -55,7 +56,7 @@ export class MicrosoftOAuth implements OAuthProvider {
         code,
         redirect_uri: redirectUri,
         grant_type: 'authorization_code',
-        scope: 'https://graph.microsoft.com/Calendars.ReadWrite https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.ReadWrite offline_access',
+        scope: 'https://graph.microsoft.com/Calendars.ReadWrite https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/People.Read offline_access',
       }),
     });
 
@@ -82,7 +83,7 @@ export class MicrosoftOAuth implements OAuthProvider {
         client_secret: this.clientSecret,
         refresh_token: refreshTokenValue,
         grant_type: 'refresh_token',
-        scope: 'https://graph.microsoft.com/Calendars.ReadWrite https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.ReadWrite offline_access',
+        scope: 'https://graph.microsoft.com/Calendars.ReadWrite https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/People.Read offline_access',
       }),
     });
 

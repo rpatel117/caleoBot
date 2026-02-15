@@ -32,6 +32,7 @@ export class GoogleOAuth implements OAuthProvider {
     const scopes = [
       'https://www.googleapis.com/auth/calendar',
       'https://www.googleapis.com/auth/gmail.compose',
+      'https://www.googleapis.com/auth/directory.readonly',
     ].join(' ');
 
     const params = new URLSearchParams({

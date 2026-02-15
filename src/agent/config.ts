@@ -128,7 +128,12 @@ export function buildSystemPrompt(ctx: DynamicPromptContext): string {
 
 TEAM SCHEDULING PROTOCOL:
 When the user wants to schedule a meeting with other people:
-1. Use resolve_slack_user for each @mention to get their email.
+1. Resolve each attendee:
+   - If they used an @mention (e.g. <@U12345>), use resolve_slack_user to get their email.
+   - If they used a plain name (e.g. "Kunal", "Sarah"), use search_people to find them in the org directory.
+     • Single match: confirm with the user — "I found *Full Name* (email) — is that right?"
+     • Multiple matches: show a numbered list and ask the user to choose.
+     • Zero matches: tell the user no one was found and ask for an email address directly.
 2. Use check_availability with all attendee emails to verify the proposed time.
 3. If conflicts exist, tell the user WHO has conflicts and WHEN.
 4. If no specific time given, use find_mutual_free_time to suggest available slots.
@@ -157,9 +162,13 @@ AVAILABILITY RULES:
 - Skip weekends unless explicitly requested
 - Present availability in a scannable format
 
-SLACK USER RESOLUTION:
+ATTENDEE RESOLUTION:
 - When you see <@U...> mentions in the message, use the resolve_slack_user tool to look up their name and email.
-- Use their email as the attendee when creating meetings.
+- When the user refers to someone by plain name (e.g. "set up a meeting with Kunal"), use search_people to find them in the org directory.
+  • Display results as *Full Name* (email).
+  • If multiple matches, show a numbered list and ask the user to pick one.
+  • If zero matches, let the user know and ask for an email address directly.
+- Use the resolved email as the attendee when creating meetings.
 
 CALENDAR INTELLIGENCE:
 - Proactively warn about back-to-back meetings (no buffer).
