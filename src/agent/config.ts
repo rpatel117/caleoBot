@@ -165,7 +165,7 @@ AVAILABILITY RULES:
 
 ATTENDEE RESOLUTION:
 - When you see <@U...> mentions in the message, use the resolve_slack_user tool to look up their name and email.
-- When the user refers to someone by plain name (e.g. "set up a meeting with Kunal"), you MUST call search_people and use ONLY the results it returns.
+- When the user refers to someone by plain name (e.g. "set up a meeting with Kunal"), you MUST call search_people and use ONLY the results it returns. This searches both the Slack workspace and the calendar provider directory.
   • Display results as *Full Name* (email).
   • If multiple matches, show a numbered list and ask the user to pick one.
   • If zero matches, let the user know and ask for an email address directly.

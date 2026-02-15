@@ -225,7 +225,7 @@ const toolDefinitions: Anthropic.Tool[] = [
   },
   {
     name: 'search_people',
-    description: 'Search the organization directory for people by name. Use this when the user refers to someone by plain name (e.g. "Kunal", "Sarah from marketing") instead of an @mention. Results are ranked by relevance (most contacted first). Returns name and email for each match. IMPORTANT: Only display the exact results returned by this tool. Never fabricate or guess names/emails if the tool returns an error or empty results.',
+    description: 'Search for people by name across the Slack workspace directory and the organization\'s calendar provider directory (Google/Microsoft). Use this when the user refers to someone by plain name (e.g. "Kunal", "Sarah from marketing") instead of an @mention. Results are deduplicated and ranked by relevance. Returns name and email for each match. IMPORTANT: Only display the exact results returned by this tool. Never fabricate or guess names/emails if the tool returns an error or empty results.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -762,29 +762,64 @@ export class AnthropicAgent {
       }
 
       case 'search_people': {
+        const allResults: Array<{ name: string; email: string; source: string }> = [];
+        const errors: string[] = [];
+
+        // 1. Search calendar provider directory (Google/Microsoft)
         const provider = this.getProvider(context, input.provider);
-        if (!provider?.accessToken) {
-          return { results: [], error: this.getProviderError(context, input.provider) };
-        }
-        try {
-          if (provider.providerType === 'microsoft') {
-            return await this.searchPeopleMicrosoft(provider.accessToken, input.query);
-          } else if (provider.providerType === 'google') {
-            return await this.searchPeopleGoogle(provider.accessToken, input.query);
+        if (provider?.accessToken) {
+          try {
+            let providerResults: any;
+            if (provider.providerType === 'microsoft') {
+              providerResults = await this.searchPeopleMicrosoft(provider.accessToken, input.query);
+            } else if (provider.providerType === 'google') {
+              providerResults = await this.searchPeopleGoogle(provider.accessToken, input.query);
+            }
+            if (providerResults?.results) {
+              for (const r of providerResults.results) {
+                allResults.push({ ...r, source: provider.providerType });
+              }
+            }
+          } catch (error: any) {
+            const status = error?.status || error?.response?.status;
+            if (status === 401 || status === 403) {
+              console.log(`[search_people] ${provider.providerType} directory search returned ${status}, skipping`);
+            } else {
+              errors.push(this.formatApiError(error, provider));
+            }
           }
-          return { results: [], error: `People search is not supported for provider: ${provider.providerType}` };
-        } catch (error: any) {
-          const status = error?.status || error?.response?.status;
-          if (status === 401 || status === 403) {
-            const provName = provider.providerType === 'google' ? 'Google' : 'Microsoft';
-            return {
-              results: [],
-              error: `People search is not yet available for ${provName}. Ask the user for the attendee's email address directly instead.`,
-              fallback: 'ask_for_email',
-            };
-          }
-          return { results: [], error: this.formatApiError(error, provider) };
         }
+
+        // 2. Search Slack workspace directory
+        if (context.slackClient) {
+          try {
+            const slackResults = await this.searchPeopleSlack(context.slackClient, input.query);
+            if (slackResults?.results) {
+              for (const r of slackResults.results) {
+                allResults.push({ ...r, source: 'slack' });
+              }
+            }
+          } catch (error: any) {
+            console.error('[search_people] Slack directory search failed:', error?.message);
+          }
+        }
+
+        // 3. Deduplicate by email (prefer calendar provider over Slack)
+        const seen = new Set<string>();
+        const deduped: Array<{ name: string; email: string; source: string }> = [];
+        for (const r of allResults) {
+          const key = r.email.toLowerCase();
+          if (!seen.has(key)) {
+            seen.add(key);
+            deduped.push(r);
+          }
+        }
+
+        if (deduped.length === 0 && errors.length > 0) {
+          return { results: [], error: errors.join('; ') };
+        }
+
+        return { results: deduped.slice(0, 5) };
       }
 
       case 'get_preferences': {
@@ -821,6 +856,28 @@ export class AnthropicAgent {
       default:
         return { error: `Unknown tool: ${name}` };
     }
+  }
+
+  private async searchPeopleSlack(slackClient: any, query: string): Promise<any> {
+    const result = await slackClient.users.list({ limit: 500 });
+    const members = result?.members || [];
+    const queryLower = query.toLowerCase();
+
+    const results = members
+      .filter((m: any) => {
+        if (m.deleted || m.is_bot || m.id === 'USLACKBOT') return false;
+        const realName = (m.real_name || '').toLowerCase();
+        const displayName = (m.profile?.display_name || '').toLowerCase();
+        return realName.includes(queryLower) || displayName.includes(queryLower);
+      })
+      .slice(0, 5)
+      .map((m: any) => ({
+        name: m.real_name || m.profile?.display_name || m.name,
+        email: m.profile?.email || null,
+      }))
+      .filter((p: any) => p.email);
+
+    return { results };
   }
 
   private async searchPeopleMicrosoft(accessToken: string, query: string): Promise<any> {
