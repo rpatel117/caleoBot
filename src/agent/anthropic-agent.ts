@@ -776,7 +776,12 @@ export class AnthropicAgent {
         } catch (error: any) {
           const status = error?.status || error?.response?.status;
           if (status === 401 || status === 403) {
-            return { results: [], error: 'People search requires updated permissions. Please run /caleo-auth to reconnect with the new scopes.' };
+            const provName = provider.providerType === 'google' ? 'Google' : 'Microsoft';
+            return {
+              results: [],
+              error: `People search is not yet available for ${provName}. Ask the user for the attendee's email address directly instead.`,
+              fallback: 'ask_for_email',
+            };
           }
           return { results: [], error: this.formatApiError(error, provider) };
         }
