@@ -1,6 +1,6 @@
 import {
   CalendarProvider, CalendarEvent, CreateEventParams, UpdateEventParams,
-  AvailabilityResult, FreeTimeParams, TimeSlot,
+  AvailabilityResult, FreeTimeParams, TimeSlot, AttendeeAvailability,
 } from '../types';
 
 const BASE_URL = 'https://graph.microsoft.com/v1.0';
@@ -133,6 +133,15 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
   }
 
   async checkAvailability(accessToken: string, start: Date, end: Date, attendees?: string[]): Promise<AvailabilityResult> {
+    if (attendees?.length) {
+      try {
+        return await this.getScheduleAvailability(accessToken, start, end, attendees);
+      } catch (error: any) {
+        console.warn('[Microsoft] getSchedule failed, falling back to event-based check:', error?.message);
+        // Fall through to event-based check
+      }
+    }
+
     const events = await this.getEvents(accessToken, start, end);
     const conflicts = events.map(event => ({
       subject: event.subject,
@@ -144,6 +153,76 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
       available: conflicts.length === 0,
       conflicts,
     };
+  }
+
+  private async getScheduleAvailability(
+    accessToken: string, start: Date, end: Date, attendees: string[]
+  ): Promise<AvailabilityResult> {
+    const body = {
+      schedules: attendees,
+      startTime: { dateTime: start.toISOString(), timeZone: 'UTC' },
+      endTime: { dateTime: end.toISOString(), timeZone: 'UTC' },
+      availabilityViewInterval: 15,
+    };
+
+    const response = await fetch(`${BASE_URL}/me/calendar/getSchedule`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Graph getSchedule error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json() as any;
+    const schedules = data.value || [];
+    const conflicts: Array<{ subject: string; start: string; end: string }> = [];
+    const attendeeResults: AttendeeAvailability[] = [];
+
+    for (const schedule of schedules) {
+      const email = schedule.scheduleId || '';
+      const items = schedule.scheduleItems || [];
+      const calConflicts: Array<{ start: string; end: string }> = [];
+
+      for (const item of items) {
+        if (item.status === 'free') continue;
+        const busyStart = item.start?.dateTime || '';
+        const busyEnd = item.end?.dateTime || '';
+        conflicts.push({
+          subject: item.subject || `Busy (${email})`,
+          start: busyStart,
+          end: busyEnd,
+        });
+        calConflicts.push({ start: busyStart, end: busyEnd });
+      }
+
+      attendeeResults.push({
+        email,
+        available: calConflicts.length === 0,
+        conflicts: calConflicts,
+      });
+    }
+
+    // Also check the requesting user's own calendar
+    const ownEvents = await this.getEvents(accessToken, start, end);
+    for (const event of ownEvents) {
+      conflicts.push({
+        subject: event.subject,
+        start: event.start.dateTime,
+        end: event.end.dateTime,
+      });
+    }
+
+    const result: AvailabilityResult = { available: conflicts.length === 0, conflicts };
+    if (attendeeResults.length > 0) {
+      result.attendees = attendeeResults;
+    }
+    return result;
   }
 
   findFreeTime(accessToken: string, events: CalendarEvent[], params: FreeTimeParams): TimeSlot[] {

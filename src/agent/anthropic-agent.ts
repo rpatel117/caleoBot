@@ -144,13 +144,13 @@ const toolDefinitions: Anthropic.Tool[] = [
   },
   {
     name: 'check_availability',
-    description: 'Check availability for a specific time range',
+    description: 'Check availability for a specific time range. Supports checking multiple people\'s calendars simultaneously — returns per-attendee conflict details.',
     input_schema: {
       type: 'object' as const,
       properties: {
         startTime: { type: 'string', description: 'Start time in ISO format' },
         endTime: { type: 'string', description: 'End time in ISO format' },
-        attendees: { type: 'array', items: { type: 'string' }, description: 'Attendees to check' },
+        attendees: { type: 'array', items: { type: 'string' }, description: 'Email addresses of attendees to check availability for (cross-calendar lookup)' },
         provider: { type: 'string', description: 'Calendar provider', enum: ['microsoft', 'google'] }
       },
       required: ['startTime', 'endTime']
@@ -170,6 +170,23 @@ const toolDefinitions: Anthropic.Tool[] = [
         provider: { type: 'string', description: 'Calendar provider', enum: ['microsoft', 'google'] }
       },
       required: ['duration', 'startDate', 'endDate']
+    }
+  },
+  {
+    name: 'find_mutual_free_time',
+    description: 'Find time slots when all specified attendees (and the requesting user) are free. Use this when scheduling a meeting with multiple people and no specific time is given.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        attendeeEmails: { type: 'array', items: { type: 'string' }, description: 'Email addresses of all attendees to check' },
+        duration: { type: 'number', description: 'Meeting duration in minutes' },
+        startDate: { type: 'string', description: 'Start of search range (ISO format)' },
+        endDate: { type: 'string', description: 'End of search range (ISO format)' },
+        workingHoursStart: { type: 'string', description: 'Working hours start (e.g., "09:00")' },
+        workingHoursEnd: { type: 'string', description: 'Working hours end (e.g., "17:00")' },
+        provider: { type: 'string', description: 'Calendar provider', enum: ['microsoft', 'google'] }
+      },
+      required: ['attendeeEmails', 'duration', 'startDate', 'endDate']
     }
   },
   {
@@ -579,6 +596,98 @@ export class AnthropicAgent {
             } : undefined,
           });
           return { freeSlots: slots };
+        } catch (error: any) {
+          return { freeSlots: [], error: this.formatApiError(error, provider) };
+        }
+      }
+
+      case 'find_mutual_free_time': {
+        const provider = this.getProvider(context, input.provider);
+        if (!provider?.calendar || !provider.accessToken) {
+          return { freeSlots: [], error: this.getProviderError(context, input.provider) };
+        }
+        try {
+          const startDate = new Date(input.startDate);
+          const endDate = new Date(input.endDate);
+          const emails: string[] = input.attendeeEmails || [];
+          const durationMs = (input.duration || 30) * 60 * 1000;
+          const workStart = input.workingHoursStart || '09:00';
+          const workEnd = input.workingHoursEnd || '17:00';
+
+          // Get availability for all attendees (includes per-attendee breakdown)
+          const availability = await provider.calendar.checkAvailability(
+            provider.accessToken, startDate, endDate, emails
+          );
+
+          // Also get the requesting user's own events as busy periods
+          const ownEvents = await provider.calendar.getEvents(provider.accessToken, startDate, endDate);
+          const allBusy: Array<{ start: number; end: number }> = [];
+
+          // Add own events
+          for (const e of ownEvents) {
+            allBusy.push({
+              start: new Date(e.start.dateTime).getTime(),
+              end: new Date(e.end.dateTime).getTime(),
+            });
+          }
+
+          // Add all attendee conflicts from the availability check
+          for (const conflict of availability.conflicts) {
+            allBusy.push({
+              start: new Date(conflict.start).getTime(),
+              end: new Date(conflict.end).getTime(),
+            });
+          }
+
+          // Merge overlapping busy blocks
+          allBusy.sort((a, b) => a.start - b.start);
+          const merged: Array<{ start: number; end: number }> = [];
+          for (const b of allBusy) {
+            if (merged.length > 0 && b.start <= merged[merged.length - 1].end) {
+              merged[merged.length - 1].end = Math.max(merged[merged.length - 1].end, b.end);
+            } else {
+              merged.push({ ...b });
+            }
+          }
+
+          // Scan for free slots within working hours, skip weekends
+          const slots: Array<{ start: string; end: string }> = [];
+          const current = new Date(startDate);
+          while (current < endDate && slots.length < 5) {
+            if (current.getDay() === 0 || current.getDay() === 6) {
+              current.setDate(current.getDate() + 1);
+              current.setHours(0, 0, 0, 0);
+              continue;
+            }
+
+            const [sH, sM] = workStart.split(':').map(Number);
+            const [eH, eM] = workEnd.split(':').map(Number);
+            const dayStart = new Date(current);
+            dayStart.setHours(sH, sM, 0, 0);
+            const dayEnd = new Date(current);
+            dayEnd.setHours(eH, eM, 0, 0);
+
+            let slotStart = dayStart.getTime();
+            while (slotStart + durationMs <= dayEnd.getTime() && slots.length < 5) {
+              const slotEnd = slotStart + durationMs;
+              const hasConflict = merged.some(b => b.start < slotEnd && b.end > slotStart);
+              if (!hasConflict) {
+                slots.push({
+                  start: new Date(slotStart).toISOString(),
+                  end: new Date(slotEnd).toISOString(),
+                });
+              }
+              slotStart += 30 * 60 * 1000;
+            }
+
+            current.setDate(current.getDate() + 1);
+            current.setHours(0, 0, 0, 0);
+          }
+
+          return {
+            freeSlots: slots,
+            attendees: availability.attendees || [],
+          };
         } catch (error: any) {
           return { freeSlots: [], error: this.formatApiError(error, provider) };
         }

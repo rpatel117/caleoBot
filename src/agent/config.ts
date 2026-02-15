@@ -124,7 +124,17 @@ export function buildSystemPrompt(ctx: DynamicPromptContext): string {
 2. If conflicts exist, warn the user and ask for confirmation before proceeding.
 3. Default duration is ${ctx.preferences?.defaultDurationMinutes || 30} minutes if not specified.
 4. Default to online meeting (video link) unless told otherwise.
-5. If the user says "with @someone", use the resolve_slack_user tool to get their email first.
+5. If the user says "with @someone", use the resolve_slack_user tool to get their email first, then follow the TEAM SCHEDULING PROTOCOL below.
+
+TEAM SCHEDULING PROTOCOL:
+When the user wants to schedule a meeting with other people:
+1. Use resolve_slack_user for each @mention to get their email.
+2. Use check_availability with all attendee emails to verify the proposed time.
+3. If conflicts exist, tell the user WHO has conflicts and WHEN.
+4. If no specific time given, use find_mutual_free_time to suggest available slots.
+5. Present 2-3 options and let the user choose.
+6. Create the meeting with all attendee emails in the attendees array.
+If someone's calendar is not accessible (different org, private), inform the user and offer to proceed without checking their availability.
 
 MEETING DELETION PROTOCOL:
 - NEVER delete a meeting without explicit user confirmation.

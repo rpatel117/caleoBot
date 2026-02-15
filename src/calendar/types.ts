@@ -46,6 +46,12 @@ export interface UpdateEventParams {
   body?: string;
 }
 
+export interface AttendeeAvailability {
+  email: string;
+  available: boolean;
+  conflicts: Array<{ start: string; end: string }>;
+}
+
 export interface AvailabilityResult {
   available: boolean;
   conflicts: Array<{
@@ -53,6 +59,7 @@ export interface AvailabilityResult {
     start: string;
     end: string;
   }>;
+  attendees?: AttendeeAvailability[];
 }
 
 export interface FreeTimeParams {

@@ -1,6 +1,6 @@
 import {
   CalendarProvider, CalendarEvent, CreateEventParams, UpdateEventParams,
-  AvailabilityResult, FreeTimeParams, TimeSlot,
+  AvailabilityResult, FreeTimeParams, TimeSlot, AttendeeAvailability,
 } from '../types';
 
 const BASE_URL = 'https://www.googleapis.com/calendar/v3';
@@ -168,19 +168,34 @@ export class GoogleCalendarProvider implements CalendarProvider {
     const data = await response.json() as any;
     const calendars = data.calendars || {};
     const conflicts: Array<{ subject: string; start: string; end: string }> = [];
+    const attendeeResults: AttendeeAvailability[] = [];
 
     for (const calId of Object.keys(calendars)) {
       const busy = calendars[calId]?.busy || [];
+      const calConflicts: Array<{ start: string; end: string }> = [];
       for (const period of busy) {
         conflicts.push({
           subject: calId === 'primary' ? 'Busy' : `Busy (${calId})`,
           start: period.start,
           end: period.end,
         });
+        calConflicts.push({ start: period.start, end: period.end });
+      }
+      // Only include non-primary calendars (attendees) in per-attendee results
+      if (calId !== 'primary' && attendees?.includes(calId)) {
+        attendeeResults.push({
+          email: calId,
+          available: calConflicts.length === 0,
+          conflicts: calConflicts,
+        });
       }
     }
 
-    return { available: conflicts.length === 0, conflicts };
+    const result: AvailabilityResult = { available: conflicts.length === 0, conflicts };
+    if (attendeeResults.length > 0) {
+      result.attendees = attendeeResults;
+    }
+    return result;
   }
 
   findFreeTime(accessToken: string, events: CalendarEvent[], params: FreeTimeParams): TimeSlot[] {
