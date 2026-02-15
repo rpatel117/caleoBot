@@ -765,6 +765,8 @@ export class AnthropicAgent {
         const allResults: Array<{ name: string; email: string; source: string }> = [];
         const errors: string[] = [];
 
+        console.log(`[search_people] Query: "${input.query}", slackClient: ${!!context.slackClient}, provider: ${this.getProvider(context, input.provider)?.providerType || 'none'}`);
+
         // 1. Search calendar provider directory (Google/Microsoft)
         const provider = this.getProvider(context, input.provider);
         if (provider?.accessToken) {
@@ -775,6 +777,7 @@ export class AnthropicAgent {
             } else if (provider.providerType === 'google') {
               providerResults = await this.searchPeopleGoogle(provider.accessToken, input.query);
             }
+            console.log(`[search_people] ${provider.providerType} returned ${providerResults?.results?.length || 0} result(s)`);
             if (providerResults?.results) {
               for (const r of providerResults.results) {
                 allResults.push({ ...r, source: provider.providerType });
@@ -794,14 +797,17 @@ export class AnthropicAgent {
         if (context.slackClient) {
           try {
             const slackResults = await this.searchPeopleSlack(context.slackClient, input.query);
+            console.log(`[search_people] Slack returned ${slackResults?.results?.length || 0} result(s)`);
             if (slackResults?.results) {
               for (const r of slackResults.results) {
                 allResults.push({ ...r, source: 'slack' });
               }
             }
           } catch (error: any) {
-            console.error('[search_people] Slack directory search failed:', error?.message);
+            console.error('[search_people] Slack directory search failed:', error?.message, error?.data || '');
           }
+        } else {
+          console.warn('[search_people] No slackClient available — skipping Slack search');
         }
 
         // 3. Deduplicate by email (prefer calendar provider over Slack)
@@ -814,6 +820,8 @@ export class AnthropicAgent {
             deduped.push(r);
           }
         }
+
+        console.log(`[search_people] Final: ${deduped.length} deduped result(s) from ${allResults.length} total`);
 
         if (deduped.length === 0 && errors.length > 0) {
           return { results: [], error: errors.join('; ') };
@@ -859,23 +867,46 @@ export class AnthropicAgent {
   }
 
   private async searchPeopleSlack(slackClient: any, query: string): Promise<any> {
-    const result = await slackClient.users.list({ limit: 500 });
-    const members = result?.members || [];
-    const queryLower = query.toLowerCase();
+    // Paginate through all workspace members
+    const allMembers: any[] = [];
+    let cursor: string | undefined;
+    const MAX_PAGES = 10; // Safety cap
+    let pages = 0;
 
-    const results = members
-      .filter((m: any) => {
-        if (m.deleted || m.is_bot || m.id === 'USLACKBOT') return false;
-        const realName = (m.real_name || '').toLowerCase();
-        const displayName = (m.profile?.display_name || '').toLowerCase();
-        return realName.includes(queryLower) || displayName.includes(queryLower);
-      })
+    do {
+      const result = await slackClient.users.list({
+        limit: 200,
+        ...(cursor ? { cursor } : {}),
+      });
+      const members = result?.members || [];
+      allMembers.push(...members);
+      cursor = result?.response_metadata?.next_cursor || undefined;
+      pages++;
+    } while (cursor && pages < MAX_PAGES);
+
+    console.log(`[search_people] Slack users.list returned ${allMembers.length} members (${pages} page(s))`);
+
+    const queryLower = query.toLowerCase();
+    const matched = allMembers.filter((m: any) => {
+      if (m.deleted || m.is_bot || m.id === 'USLACKBOT') return false;
+      const realName = (m.real_name || '').toLowerCase();
+      const displayName = (m.profile?.display_name || '').toLowerCase();
+      return realName.includes(queryLower) || displayName.includes(queryLower);
+    });
+
+    console.log(`[search_people] Slack name filter for "${query}": ${matched.length} match(es)`);
+
+    const results = matched
       .slice(0, 5)
       .map((m: any) => ({
         name: m.real_name || m.profile?.display_name || m.name,
         email: m.profile?.email || null,
       }))
       .filter((p: any) => p.email);
+
+    if (matched.length > 0 && results.length === 0) {
+      console.warn(`[search_people] Slack matched ${matched.length} user(s) by name but none had email addresses`);
+    }
 
     return { results };
   }
