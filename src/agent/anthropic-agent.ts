@@ -786,7 +786,9 @@ export class AnthropicAgent {
           } catch (error: any) {
             const status = error?.status || error?.response?.status;
             if (status === 401 || status === 403) {
-              console.log(`[search_people] ${provider.providerType} directory search returned ${status}, skipping`);
+              const provName = provider.providerType === 'google' ? 'Google' : 'Microsoft';
+              console.log(`[search_people] ${provider.providerType} directory search returned ${status}, needs re-auth`);
+              errors.push(`${provName} directory search needs updated permissions. The user can run /caleo-auth and click "Reconnect ${provName}" to enable organization-wide people search.`);
             } else {
               errors.push(this.formatApiError(error, provider));
             }
@@ -823,11 +825,12 @@ export class AnthropicAgent {
 
         console.log(`[search_people] Final: ${deduped.length} deduped result(s) from ${allResults.length} total`);
 
-        if (deduped.length === 0 && errors.length > 0) {
-          return { results: [], error: errors.join('; ') };
+        // Always include permission hints so the agent can inform the user
+        const result: any = { results: deduped.slice(0, 5) };
+        if (errors.length > 0) {
+          result.note = errors.join('; ');
         }
-
-        return { results: deduped.slice(0, 5) };
+        return result;
       }
 
       case 'get_preferences': {

@@ -640,10 +640,12 @@ app.command('/caleo-auth', async ({ command, ack, respond, client, body }: any) 
   const connectedProviders = tokens.map((t: any) => t.provider);
 
   const redirectUri = getRedirectUri();
-  const elements: any[] = [];
+  const connectElements: any[] = [];
+  const reconnectElements: any[] = [];
 
+  // Show "Connect" for providers not yet connected
   if (!connectedProviders.includes('microsoft')) {
-    elements.push({
+    connectElements.push({
       type: 'button',
       text: { type: 'plain_text', text: 'Connect Microsoft Outlook' },
       url: microsoftOAuth.generateAuthUrl(command.user_id, slackTeamId, redirectUri),
@@ -652,7 +654,7 @@ app.command('/caleo-auth', async ({ command, ack, respond, client, body }: any) 
   }
 
   if (!connectedProviders.includes('google')) {
-    elements.push({
+    connectElements.push({
       type: 'button',
       text: { type: 'plain_text', text: 'Connect Google Calendar' },
       url: googleOAuth.generateAuthUrl(command.user_id, slackTeamId, redirectUri),
@@ -660,22 +662,60 @@ app.command('/caleo-auth', async ({ command, ack, respond, client, body }: any) 
     });
   }
 
-  if (elements.length === 0) {
-    await respond(`Your connected providers: ${connectedProviders.join(', ')}. All available providers are connected.`);
-    return;
+  // Show "Reconnect" for already-connected providers (to update permissions/scopes)
+  if (connectedProviders.includes('microsoft')) {
+    reconnectElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'Reconnect Microsoft' },
+      url: microsoftOAuth.generateAuthUrl(command.user_id, slackTeamId, redirectUri),
+      action_id: 'reconnect_microsoft',
+    });
   }
 
-  const statusText = connectedProviders.length > 0
-    ? `Connected: ${connectedProviders.join(', ')}. Connect more:`
-    : 'Connect a calendar provider to get started:';
+  if (connectedProviders.includes('google')) {
+    reconnectElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'Reconnect Google' },
+      url: googleOAuth.generateAuthUrl(command.user_id, slackTeamId, redirectUri),
+      action_id: 'reconnect_google',
+    });
+  }
 
-  await respond({
-    text: statusText,
-    blocks: [
-      { type: 'section', text: { type: 'mrkdwn', text: statusText } },
-      { type: 'actions', elements },
-    ],
-  });
+  const blocks: any[] = [];
+
+  if (connectedProviders.length > 0) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*Connected:* ${connectedProviders.join(', ')}` } });
+  }
+
+  if (connectElements.length > 0) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: 'Connect a new provider:' } });
+    blocks.push({ type: 'actions', elements: connectElements });
+  }
+
+  if (reconnectElements.length > 0) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '_Reconnect to update permissions (e.g. enable people search):_' } });
+    blocks.push({ type: 'actions', elements: reconnectElements });
+  }
+
+  if (blocks.length === 0) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: 'Connect a calendar provider to get started:' } });
+    blocks.push({ type: 'actions', elements: [
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: 'Connect Microsoft Outlook' },
+        url: microsoftOAuth.generateAuthUrl(command.user_id, slackTeamId, redirectUri),
+        action_id: 'connect_microsoft',
+      },
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: 'Connect Google Calendar' },
+        url: googleOAuth.generateAuthUrl(command.user_id, slackTeamId, redirectUri),
+        action_id: 'connect_google',
+      },
+    ]});
+  }
+
+  await respond({ text: 'Caleo — Calendar Connections', blocks });
 });
 
 // /caleo-billing command

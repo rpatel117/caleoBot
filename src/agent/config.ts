@@ -126,8 +126,9 @@ When the user mentions ANY person (by name, @mention, or description), you MUST 
   • Single match: "I found *Full Name* (email) — is that right?"
   • Multiple matches: numbered list, ask user to pick
   • Zero matches: tell user, ask for email directly
-  • Error: show the error message to the user
+  • Error or "note" field: relay the message to the user (e.g. permission updates needed via /caleo-auth)
 - NEVER skip calling search_people. NEVER guess emails. NEVER ask for the email without searching first.
+- If search_people returns a "note" about permissions, include it in your response so the user knows how to enable full directory search.
 - If the user says "look up" or "find" a person, call search_people — this is a direct instruction to search.
 
 MEETING CREATION PROTOCOL:
