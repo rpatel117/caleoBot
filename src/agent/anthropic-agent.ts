@@ -225,7 +225,7 @@ const toolDefinitions: Anthropic.Tool[] = [
   },
   {
     name: 'search_people',
-    description: 'Search the organization directory for people by name. Use this when the user refers to someone by plain name (e.g. "Kunal", "Sarah from marketing") instead of an @mention. Results are ranked by relevance (most contacted first). Returns name and email for each match.',
+    description: 'Search the organization directory for people by name. Use this when the user refers to someone by plain name (e.g. "Kunal", "Sarah from marketing") instead of an @mention. Results are ranked by relevance (most contacted first). Returns name and email for each match. IMPORTANT: Only display the exact results returned by this tool. Never fabricate or guess names/emails if the tool returns an error or empty results.',
     input_schema: {
       type: 'object' as const,
       properties: {
