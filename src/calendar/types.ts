@@ -28,8 +28,8 @@ export interface CalendarEvent {
 
 export interface CreateEventParams {
   subject: string;
-  start: Date;
-  end: Date;
+  start: string; // Local ISO datetime without offset (e.g., "2026-02-18T09:00:00")
+  end: string;   // Local ISO datetime without offset
   attendees?: string[];
   location?: string;
   body?: string;
@@ -39,8 +39,9 @@ export interface CreateEventParams {
 
 export interface UpdateEventParams {
   subject?: string;
-  start?: Date;
-  end?: Date;
+  start?: string; // Local ISO datetime without offset
+  end?: string;   // Local ISO datetime without offset
+  timezone?: string;
   attendees?: string[];
   location?: string;
   body?: string;

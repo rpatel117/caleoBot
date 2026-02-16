@@ -524,10 +524,13 @@ export class AnthropicAgent {
               ? `${eventBody}\n\nScheduled from Slack: ${threadLink}`
               : `Scheduled from Slack: ${threadLink}`;
           }
+          // Strip Z/offset — the LLM generates times in the user's local timezone
+          const startLocal = input.startTime.replace(/Z$/, '').replace(/[+-]\d{2}:?\d{2}$/, '');
+          const endLocal = input.endTime.replace(/Z$/, '').replace(/[+-]\d{2}:?\d{2}$/, '');
           const event = await provider.calendar.createEvent(provider.accessToken, {
             subject: input.subject,
-            start: new Date(input.startTime),
-            end: new Date(input.endTime),
+            start: startLocal,
+            end: endLocal,
             attendees: input.attendees || [],
             location: input.location,
             body: eventBody,
@@ -548,8 +551,9 @@ export class AnthropicAgent {
         try {
           const updates: any = {};
           if (input.subject) updates.subject = input.subject;
-          if (input.startTime) updates.start = new Date(input.startTime);
-          if (input.endTime) updates.end = new Date(input.endTime);
+          if (input.startTime) updates.start = input.startTime.replace(/Z$/, '').replace(/[+-]\d{2}:?\d{2}$/, '');
+          if (input.endTime) updates.end = input.endTime.replace(/Z$/, '').replace(/[+-]\d{2}:?\d{2}$/, '');
+          updates.timezone = tz;
           if (input.attendees) updates.attendees = input.attendees;
           if (input.location) updates.location = input.location;
           if (input.body) updates.body = input.body;

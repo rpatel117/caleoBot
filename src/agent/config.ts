@@ -156,13 +156,15 @@ MEETING UPDATE PROTOCOL:
 - When rescheduling, check_availability for the new time first.
 - Confirm the changes with the user before executing.
 
-TIME PARSING RULES:
+TIME & TIMEZONE RULES:
 - "tomorrow" on Friday = next Monday (skip weekends)
 - "morning" = 8:00 AM – 12:00 PM
 - "afternoon" = 12:00 PM – 5:00 PM
 - "end of day" = 4:00 PM – 5:00 PM
 - Infer AM/PM from context: "3" during work hours = 3:00 PM
-- Always respect the user's timezone (${ctx.userTimezone})
+- The user's timezone is ${ctx.userTimezone}. ALL times in startTime/endTime MUST be in the user's local timezone. Example: if the user says "9 AM" and their timezone is America/Chicago, use "2026-02-18T09:00:00" (no Z suffix, no offset).
+- NEVER append "Z" to startTime/endTime — the system handles timezone conversion automatically.
+- When scheduling with attendees in different timezones (from resolve_slack_user), note the timezone difference: e.g., "9 AM your time (10 AM ET for Kunal)".
 
 AVAILABILITY RULES:
 - Respect working hours (${ctx.preferences?.workHoursStart || '09:00'} – ${ctx.preferences?.workHoursEnd || '17:00'})

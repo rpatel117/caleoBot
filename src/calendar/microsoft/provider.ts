@@ -31,12 +31,12 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
     const body: any = {
       subject: params.subject,
       start: {
-        dateTime: params.start.toISOString(),
-        timeZone: 'UTC',
+        dateTime: params.start,
+        timeZone: params.timezone || 'UTC',
       },
       end: {
-        dateTime: params.end.toISOString(),
-        timeZone: 'UTC',
+        dateTime: params.end,
+        timeZone: params.timezone || 'UTC',
       },
       isOnlineMeeting: params.isOnlineMeeting ?? true,
       responseRequested: true,
@@ -82,10 +82,10 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
 
     if (updates.subject) body.subject = updates.subject;
     if (updates.start) {
-      body.start = { dateTime: updates.start.toISOString(), timeZone: 'UTC' };
+      body.start = { dateTime: updates.start, timeZone: updates.timezone || 'UTC' };
     }
     if (updates.end) {
-      body.end = { dateTime: updates.end.toISOString(), timeZone: 'UTC' };
+      body.end = { dateTime: updates.end, timeZone: updates.timezone || 'UTC' };
     }
     if (updates.attendees) {
       body.attendees = updates.attendees.map(email => ({
