@@ -15,7 +15,11 @@ import { GoogleEmailProvider } from '../email/google';
 import { buildSystemPrompt, DynamicPromptContext, UserPreferences, DayEventsSnapshot } from '../agent/config';
 import { formatEventsForPrompt, computeFreeTimeGaps, detectConflicts } from '../agent/calendar-context';
 import { calculateCostCents, formatBalanceForDisplay, LOW_BALANCE_THRESHOLD_CENTS } from '../billing/usage-tracker';
+import { PLAN_LIMITS } from '../billing/plans';
+import { signCheckoutParams } from '../billing/checkout-signer';
 import { CalendarEvent } from '../calendar/types';
+import { verifyAndDecodeState } from '../auth/oauth-state';
+import { RateLimiter } from '../rate-limiter';
 
 const { App, ExpressReceiver } = require('@slack/bolt') as {
   App: any;
@@ -25,6 +29,10 @@ const { App, ExpressReceiver } = require('@slack/bolt') as {
 // Deduplication
 const processedEventIds = new Set<string>();
 const processedEventTtlMs = 5 * 60 * 1000;
+
+// Rate limiting: 10 messages per user per 60 seconds
+const messageRateLimiter = new RateLimiter(10, 60_000);
+setInterval(() => messageRateLimiter.cleanup(), 5 * 60_000);
 
 function getRequiredEnv(name: string): string {
   const value = process.env[name];
@@ -313,7 +321,14 @@ const httpServer = http.createServer(async (req, res) => {
         return;
       }
 
-      const stateData = JSON.parse(Buffer.from(state, 'base64').toString());
+      let stateData;
+      try {
+        stateData = verifyAndDecodeState(state);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Invalid or tampered state parameter' }));
+        return;
+      }
       const { userId: slackUserId, workspaceId, provider } = stateData;
       const redirectUri = getRedirectUri();
 
@@ -400,20 +415,55 @@ async function processUserMessage(args: {
   const normalizedText = normalizeMessageText(args.text);
   if (!normalizedText) return;
 
+  // --- Rate limiting (before any DB lookups) ---
+  const rateCheck = messageRateLimiter.check(args.userId);
+  if (!rateCheck.allowed) {
+    const waitSec = Math.ceil(rateCheck.retryAfterMs / 1000);
+    await args.client.chat.postMessage({
+      channel: args.channel,
+      thread_ts: args.replyTs ?? args.threadTs,
+      text: `Slow down! You're sending messages too fast. Try again in ${waitSec}s.`,
+    });
+    return;
+  }
+
   console.log(`Processing message from ${args.userId}: "${normalizedText}"`);
 
   const { userContext, dbUserId, slackTeamId } = await ensureUser(args.client, args.userId, args.teamId);
   console.log(`User ensured: dbUserId=${dbUserId}, name=${userContext.name}`);
 
-  // --- Balance gating ---
+  // --- User type & billing checks ---
+  const userType = await repository.getUserType(dbUserId);
   const balance = await repository.getBalance(dbUserId);
-  if (balance.balance_cents <= 0) {
-    await args.client.chat.postMessage({
-      channel: args.channel,
-      thread_ts: args.replyTs ?? args.threadTs,
-      text: `You're out of Caleo credits (balance: ${formatBalanceForDisplay(balance.balance_cents)}). Use \`/caleo-billing\` to add more.`,
-    });
-    return;
+
+  // Developer users bypass all billing checks
+  if (userType !== 'developer') {
+    // --- Balance gating ---
+    if (balance.balance_cents <= 0) {
+      await args.client.chat.postMessage({
+        channel: args.channel,
+        thread_ts: args.replyTs ?? args.threadTs,
+        text: `You're out of Caleo credits (balance: ${formatBalanceForDisplay(balance.balance_cents)}). Use \`/caleo-billing\` to add more.`,
+      });
+      return;
+    }
+
+    // --- Plan limit gating (atomic increment-and-check) ---
+    const plan = await repository.getWorkspacePlan(userContext.workspaceId);
+    const limits = PLAN_LIMITS[plan] || PLAN_LIMITS.free;
+    const messageCheck = await repository.incrementUsageWithLimit(
+      userContext.workspaceId,
+      'message_sent',
+      limits.messagesPerMonth
+    );
+    if (!messageCheck.allowed) {
+      await args.client.chat.postMessage({
+        channel: args.channel,
+        thread_ts: args.replyTs ?? args.threadTs,
+        text: `You've reached your free plan limit of ${limits.messagesPerMonth} messages this month. Upgrade to Pro to continue. Use \`/caleo-upgrade\` to learn more.`,
+      });
+      return;
+    }
   }
 
   // Always load providers — the agent needs to know what's connected regardless of message content
@@ -555,37 +605,64 @@ async function processUserMessage(args: {
     conversationHistory,
     dbUserId,
     systemPrompt,
-    slackContext
+    slackContext,
+    userType
   );
   console.log(`Agent responded (${agentResponse.text.length} chars, ${agentResponse.totalUsage.inputTokens}+${agentResponse.totalUsage.outputTokens} tokens)`);
 
   await repository.createMessage(conversation.id, 'assistant', agentResponse.text);
 
-  // --- Deduct balance & log usage ---
-  const costCents = calculateCostCents(agentResponse.totalUsage);
-  if (costCents > 0 && conversationId) {
-    try {
-      await repository.deductBalance(dbUserId, costCents);
-      await repository.createUsageLog({
-        userId: dbUserId,
-        conversationId,
-        inputTokens: agentResponse.totalUsage.inputTokens,
-        outputTokens: agentResponse.totalUsage.outputTokens,
-        costCents,
-        toolIterations: agentResponse.toolIterations,
-      });
-    } catch (err) {
-      console.error('Failed to log usage / deduct balance:', err);
+  // --- Track workspace usage ---
+  // Message count for developers (non-developers already incremented atomically in the limit check above)
+  try {
+    if (userType === 'developer') {
+      await repository.incrementUsage(userContext.workspaceId, 'message_sent');
+    }
+    if (agentResponse.actionsPerformed) {
+      const ap = agentResponse.actionsPerformed;
+      for (let i = 0; i < ap.meetingsCreated; i++) {
+        await repository.incrementUsage(userContext.workspaceId, 'meeting_created');
+      }
+      for (let i = 0; i < ap.meetingsUpdated; i++) {
+        await repository.incrementUsage(userContext.workspaceId, 'meeting_updated');
+      }
+      for (let i = 0; i < ap.meetingsDeleted; i++) {
+        await repository.incrementUsage(userContext.workspaceId, 'meeting_deleted');
+      }
+    }
+  } catch (err) {
+    console.error('Failed to track workspace usage:', err);
+  }
+
+  // --- Deduct balance & log usage (skip for developers) ---
+  if (userType !== 'developer') {
+    const costCents = calculateCostCents(agentResponse.totalUsage);
+    if (costCents > 0 && conversationId) {
+      try {
+        await repository.deductBalance(dbUserId, costCents);
+        await repository.createUsageLog({
+          userId: dbUserId,
+          conversationId,
+          inputTokens: agentResponse.totalUsage.inputTokens,
+          outputTokens: agentResponse.totalUsage.outputTokens,
+          costCents,
+          toolIterations: agentResponse.toolIterations,
+        });
+      } catch (err) {
+        console.error('Failed to log usage / deduct balance:', err);
+      }
     }
   }
 
   // Send response
   let responseText = agentResponse.text;
 
-  // Low balance warning
-  const updatedBalance = await repository.getBalance(dbUserId);
-  if (updatedBalance.balance_cents > 0 && updatedBalance.balance_cents <= LOW_BALANCE_THRESHOLD_CENTS) {
-    responseText += `\n\n_Your Caleo balance is low (${formatBalanceForDisplay(updatedBalance.balance_cents)}). Use \`/caleo-billing\` to add credits._`;
+  // Low balance warning (skip for developers)
+  if (userType !== 'developer') {
+    const updatedBalance = await repository.getBalance(dbUserId);
+    if (updatedBalance.balance_cents > 0 && updatedBalance.balance_cents <= LOW_BALANCE_THRESHOLD_CENTS) {
+      responseText += `\n\n_Your Caleo balance is low (${formatBalanceForDisplay(updatedBalance.balance_cents)}). Use \`/caleo-billing\` to add credits._`;
+    }
   }
 
   const chunks = splitLongMessage(responseText);
@@ -727,8 +804,10 @@ app.command('/caleo-billing', async ({ command, ack, respond, client, body }: an
 
     const baseUrl = process.env.BILLING_BASE_URL || process.env.NGROK_URL || `http://localhost:${httpPort}`;
 
-    const makeUrl = (amount: number) =>
-      `${baseUrl}/billing/checkout?amount=${amount}&user=${command.user_id}&dbUser=${dbUserId}`;
+    const makeUrl = (amount: number) => {
+      const sig = signCheckoutParams(amount, command.user_id, dbUserId);
+      return `${baseUrl}/billing/checkout?amount=${amount}&user=${command.user_id}&dbUser=${dbUserId}&sig=${sig}`;
+    };
 
     await respond({
       text: `Caleo Billing — Balance: ${formatBalanceForDisplay(balance.balance_cents)}`,

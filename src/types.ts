@@ -6,6 +6,9 @@ export interface UserContext {
   timezone?: string;
 }
 
+export type UserType = 'developer' | 'member';
+export type WorkspacePlan = 'free' | 'pro' | 'enterprise';
+
 export type CalendarProviderType = 'microsoft' | 'google';
 
 export interface TokenSet {

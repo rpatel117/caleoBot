@@ -103,7 +103,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
       body.description = updates.body;
     }
 
-    const response = await fetch(`${BASE_URL}/calendars/primary/events/${eventId}`, {
+    const response = await fetch(`${BASE_URL}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
       method: 'PATCH',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -122,7 +122,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
   }
 
   async deleteEvent(accessToken: string, eventId: string): Promise<void> {
-    const response = await fetch(`${BASE_URL}/calendars/primary/events/${eventId}`, {
+    const response = await fetch(`${BASE_URL}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${accessToken}` },
     });

@@ -2,6 +2,7 @@ import { GoogleOAuth } from '../calendar/google/oauth';
 import { MicrosoftOAuth } from '../calendar/microsoft/oauth';
 import { EncryptionService } from '../encryption';
 import { repository } from '../database/repository';
+import { verifyAndDecodeState } from '../auth/oauth-state';
 
 const googleOAuth = new GoogleOAuth();
 const microsoftOAuth = new MicrosoftOAuth();
@@ -38,16 +39,17 @@ export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
       };
     }
 
-    const stateData = JSON.parse(Buffer.from(state, 'base64').toString());
-    const { userId: slackUserId, workspaceId, provider } = stateData;
-
-    if (!slackUserId || !workspaceId || !provider) {
+    let stateData;
+    try {
+      stateData = verifyAndDecodeState(state);
+    } catch {
       return {
         statusCode: 400,
         headers: htmlHeaders,
-        body: errorPage('Invalid state parameter. Please try authenticating again from Slack.'),
+        body: errorPage('Invalid or tampered state parameter. Please try authenticating again from Slack.'),
       };
     }
+    const { userId: slackUserId, workspaceId, provider } = stateData;
 
     console.log(`OAuth callback: provider=${provider}, slackUser=${slackUserId}, workspace=${workspaceId}`);
 

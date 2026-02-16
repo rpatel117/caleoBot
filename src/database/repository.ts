@@ -1,5 +1,6 @@
 import pool from './client';
 import { AGENT_CONFIG } from '../agent/config';
+import { MonthlyUsage } from '../billing/plans';
 
 export class Repository {
   // Workspace operations
@@ -287,16 +288,22 @@ export class Repository {
     );
   }
 
-  async deductBalance(userId: string, amountCents: number): Promise<void> {
+  /**
+   * Atomically deduct balance only if sufficient funds exist.
+   * Returns true if deduction succeeded, false if insufficient balance.
+   */
+  async deductBalance(userId: string, amountCents: number): Promise<boolean> {
     const rounded = Math.ceil(amountCents);
-    await pool.query(
+    const result = await pool.query(
       `UPDATE user_balances
        SET balance_cents = balance_cents - $2,
            lifetime_spent_cents = lifetime_spent_cents + $2,
            updated_at = now()
-       WHERE user_id = $1`,
+       WHERE user_id = $1 AND balance_cents >= $2
+       RETURNING balance_cents`,
       [userId, rounded]
     );
+    return result.rowCount !== null && result.rowCount > 0;
   }
 
   // ---------- Usage logs ----------
@@ -335,6 +342,129 @@ export class Repository {
        ON CONFLICT (stripe_event_id) DO NOTHING`,
       [stripeEventId, eventType, userId, amountCents]
     );
+  }
+
+  // ---------- User type & workspace plan ----------
+
+  async getUserType(userId: string): Promise<string> {
+    const result = await pool.query(
+      `SELECT user_type FROM users WHERE id = $1`,
+      [userId]
+    );
+    return result.rows[0]?.user_type || 'member';
+  }
+
+  async getWorkspacePlan(workspaceId: string): Promise<string> {
+    const result = await pool.query(
+      `SELECT plan FROM workspaces WHERE id = $1`,
+      [workspaceId]
+    );
+    return result.rows[0]?.plan || 'free';
+  }
+
+  // ---------- Workspace usage ----------
+
+  /**
+   * Atomically increment a usage counter and return the new value.
+   */
+  async incrementUsage(workspaceId: string, action: 'meeting_created' | 'meeting_updated' | 'meeting_deleted' | 'message_sent'): Promise<number> {
+    const now = new Date();
+    const period = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+
+    const columnMap: Record<string, string> = {
+      meeting_created: 'meetings_created',
+      meeting_updated: 'meetings_updated',
+      meeting_deleted: 'meetings_deleted',
+      message_sent: 'messages_sent',
+    };
+    const column = columnMap[action];
+
+    const result = await pool.query(
+      `INSERT INTO workspace_usage (workspace_id, period, ${column})
+       VALUES ($1, $2, 1)
+       ON CONFLICT (workspace_id, period) DO UPDATE
+       SET ${column} = workspace_usage.${column} + 1,
+           updated_at = now()
+       RETURNING ${column}`,
+      [workspaceId, period]
+    );
+    return result.rows[0]?.[column] ?? 1;
+  }
+
+  /**
+   * Atomically increment usage and check against a limit in one operation.
+   * Returns { allowed: true, newCount } if within limit, { allowed: false, newCount } if limit reached.
+   * When not allowed, the increment is NOT applied (uses a CTE to check first).
+   */
+  async incrementUsageWithLimit(
+    workspaceId: string,
+    action: 'meeting_created' | 'message_sent',
+    limit: number
+  ): Promise<{ allowed: boolean; newCount: number }> {
+    // -1 means unlimited
+    if (limit === -1) {
+      const newCount = await this.incrementUsage(workspaceId, action);
+      return { allowed: true, newCount };
+    }
+
+    const now = new Date();
+    const period = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+
+    const columnMap: Record<string, string> = {
+      meeting_created: 'meetings_created',
+      message_sent: 'messages_sent',
+    };
+    const column = columnMap[action];
+
+    // Atomic: only increment if current count < limit
+    const result = await pool.query(
+      `WITH current AS (
+        SELECT ${column} as cnt
+        FROM workspace_usage
+        WHERE workspace_id = $1 AND period = $2
+      ),
+      upserted AS (
+        INSERT INTO workspace_usage (workspace_id, period, ${column})
+        VALUES ($1, $2, 1)
+        ON CONFLICT (workspace_id, period) DO UPDATE
+        SET ${column} = workspace_usage.${column} + 1,
+            updated_at = now()
+        WHERE workspace_usage.${column} < $3
+        RETURNING ${column}
+      )
+      SELECT
+        COALESCE((SELECT ${column} FROM upserted), (SELECT cnt FROM current), 0) as count,
+        EXISTS(SELECT 1 FROM upserted) as did_increment`,
+      [workspaceId, period, limit]
+    );
+
+    const row = result.rows[0];
+    const newCount = parseInt(row?.count ?? '0', 10);
+    const didIncrement = row?.did_increment ?? false;
+
+    return { allowed: didIncrement, newCount };
+  }
+
+  async getMonthlyUsage(workspaceId: string): Promise<MonthlyUsage> {
+    const now = new Date();
+    const period = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+
+    const result = await pool.query(
+      `SELECT meetings_created, meetings_updated, meetings_deleted, messages_sent
+       FROM workspace_usage
+       WHERE workspace_id = $1 AND period = $2`,
+      [workspaceId, period]
+    );
+
+    if (result.rows[0]) {
+      return {
+        meetingsCreated: result.rows[0].meetings_created,
+        meetingsUpdated: result.rows[0].meetings_updated,
+        meetingsDeleted: result.rows[0].meetings_deleted,
+        messagesSent: result.rows[0].messages_sent,
+      };
+    }
+    return { meetingsCreated: 0, meetingsUpdated: 0, meetingsDeleted: 0, messagesSent: 0 };
   }
 
   // Health check

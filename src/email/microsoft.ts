@@ -4,11 +4,13 @@ const BASE_URL = 'https://graph.microsoft.com/v1.0';
 
 export class MicrosoftEmailProvider implements EmailProvider {
   async createDraft(accessToken: string, params: CreateDraftParams): Promise<EmailDraft> {
+    const escapeHtml = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const body = {
       subject: params.subject,
       body: {
         contentType: 'html',
-        content: params.body.replace(/\n/g, '<br>'),
+        content: escapeHtml(params.body).replace(/\n/g, '<br>'),
       },
       toRecipients: params.toRecipients.map(email => ({
         emailAddress: { address: email },

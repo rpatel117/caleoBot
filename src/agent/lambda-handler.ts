@@ -87,6 +87,7 @@ export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
         slackClient,
         slackChannelId,
         slackThreadTs,
+        actionsPerformed: { meetingsCreated: 0, meetingsUpdated: 0, meetingsDeleted: 0 },
       },
       conversationHistory || [],
       systemPrompt

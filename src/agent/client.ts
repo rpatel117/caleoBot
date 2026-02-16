@@ -22,7 +22,8 @@ export interface IAgentClient {
     conversationHistory?: Array<{ role: string; content: string }>,
     dbUserId?: string,
     systemPrompt?: string,
-    slackContext?: SlackContext
+    slackContext?: SlackContext,
+    userType?: string
   ): Promise<AgentResponse>;
 }
 
@@ -45,7 +46,8 @@ export class LocalAgentClient implements IAgentClient {
     conversationHistory: Array<{ role: string; content: string }> = [],
     dbUserId?: string,
     systemPrompt?: string,
-    slackContext?: SlackContext
+    slackContext?: SlackContext,
+    userType?: string
   ): Promise<AgentResponse> {
     console.log('Using LOCAL agent service (Anthropic)');
     return this.agent.processMessage(userMessage, {
@@ -55,6 +57,9 @@ export class LocalAgentClient implements IAgentClient {
       slackClient: slackContext?.client,
       slackChannelId: slackContext?.channelId,
       slackThreadTs: slackContext?.threadTs,
+      userType,
+      workspaceId: userContext.workspaceId,
+      actionsPerformed: { meetingsCreated: 0, meetingsUpdated: 0, meetingsDeleted: 0 },
     }, conversationHistory, systemPrompt);
   }
 }
@@ -78,7 +83,8 @@ export class RemoteAgentClient implements IAgentClient {
     conversationHistory: Array<{ role: string; content: string }> = [],
     _dbUserId?: string,
     systemPrompt?: string,
-    _slackContext?: SlackContext
+    _slackContext?: SlackContext,
+    _userType?: string
   ): Promise<AgentResponse> {
     console.log('Using REMOTE agent service (AWS Lambda)');
 
@@ -124,6 +130,7 @@ export class RemoteAgentClient implements IAgentClient {
         text: result.response || 'I was unable to generate a response.',
         totalUsage: result.totalUsage || { inputTokens: 0, outputTokens: 0 },
         toolIterations: result.toolIterations || 0,
+        actionsPerformed: result.actionsPerformed || { meetingsCreated: 0, meetingsUpdated: 0, meetingsDeleted: 0 },
       };
     } catch (error) {
       console.error('Remote agent client error:', error);
@@ -131,6 +138,7 @@ export class RemoteAgentClient implements IAgentClient {
         text: `I'm experiencing technical difficulties with the remote AI service. Please try again. Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
         totalUsage: { inputTokens: 0, outputTokens: 0 },
         toolIterations: 0,
+        actionsPerformed: { meetingsCreated: 0, meetingsUpdated: 0, meetingsDeleted: 0 },
       };
     }
   }

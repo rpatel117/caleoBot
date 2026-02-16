@@ -2,6 +2,7 @@ import { OAuthProvider } from '../types';
 import { TokenSet } from '../../types';
 import { EncryptionService } from '../../encryption';
 import { repository } from '../../database/repository';
+import { createSignedState } from '../../auth/oauth-state';
 
 export class MicrosoftOAuth implements OAuthProvider {
   private clientId: string;
@@ -19,11 +20,7 @@ export class MicrosoftOAuth implements OAuthProvider {
   }
 
   generateAuthUrl(userId: string, workspaceId: string, redirectUri: string): string {
-    const state = Buffer.from(JSON.stringify({
-      userId,
-      workspaceId,
-      provider: 'microsoft',
-    })).toString('base64');
+    const state = createSignedState({ userId, workspaceId, provider: 'microsoft' });
 
     const scopes = [
       'https://graph.microsoft.com/Calendars.ReadWrite',

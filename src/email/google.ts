@@ -4,12 +4,14 @@ export class GoogleEmailProvider implements EmailProvider {
   async createDraft(accessToken: string, params: CreateDraftParams): Promise<EmailDraft> {
     // Build RFC 2822 message
     const toHeader = params.toRecipients.join(', ');
+    const escapeHtml = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const rawMessage = [
       `To: ${toHeader}`,
       `Subject: ${params.subject}`,
       'Content-Type: text/html; charset=utf-8',
       '',
-      params.body.replace(/\n/g, '<br>'),
+      escapeHtml(params.body).replace(/\n/g, '<br>'),
     ].join('\r\n');
 
     // Base64url encode the message

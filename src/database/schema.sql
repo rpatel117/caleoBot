@@ -6,6 +6,9 @@ CREATE TABLE IF NOT EXISTS workspaces (
   platform VARCHAR(20) NOT NULL,
   external_id VARCHAR(255) NOT NULL,
   name VARCHAR(255),
+  plan VARCHAR(20) DEFAULT 'free',
+  stripe_customer_id VARCHAR(255),
+  stripe_subscription_id VARCHAR(255),
   created_at TIMESTAMPTZ DEFAULT now(),
   UNIQUE(platform, external_id)
 );
@@ -17,6 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
   display_name VARCHAR(255),
   email VARCHAR(255),
   timezone VARCHAR(100) DEFAULT 'America/Chicago',
+  user_type VARCHAR(20) DEFAULT 'member',
   created_at TIMESTAMPTZ DEFAULT now(),
   UNIQUE(workspace_id, external_id)
 );
@@ -94,6 +98,21 @@ CREATE TABLE IF NOT EXISTS stripe_events (
   amount_cents INTEGER,
   processed_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- Workspace usage tracking (plan-based limits)
+CREATE TABLE IF NOT EXISTS workspace_usage (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID REFERENCES workspaces(id),
+  period VARCHAR(7) NOT NULL,
+  meetings_created INTEGER DEFAULT 0,
+  meetings_updated INTEGER DEFAULT 0,
+  meetings_deleted INTEGER DEFAULT 0,
+  messages_sent INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(workspace_id, period)
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_usage_ws_period ON workspace_usage(workspace_id, period);
 
 CREATE INDEX IF NOT EXISTS idx_users_external_id ON users(external_id);
 CREATE INDEX IF NOT EXISTS idx_oauth_tokens_user_provider ON oauth_tokens(user_id, provider);

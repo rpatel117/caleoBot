@@ -43,7 +43,7 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
       body: {
         contentType: 'html',
         content: params.body
-          ? `<p>${params.body}</p><p>You have been invited to this meeting.</p>`
+          ? `<p>${this.escapeHtml(params.body)}</p><p>You have been invited to this meeting.</p>`
           : '<p>You have been invited to this meeting.</p>',
       },
     };
@@ -100,7 +100,7 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
       body.body = { content: updates.body, contentType: 'text' };
     }
 
-    const response = await fetch(`${BASE_URL}/me/calendar/events/${eventId}`, {
+    const response = await fetch(`${BASE_URL}/me/calendar/events/${encodeURIComponent(eventId)}`, {
       method: 'PATCH',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -119,7 +119,7 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
   }
 
   async deleteEvent(accessToken: string, eventId: string): Promise<void> {
-    const response = await fetch(`${BASE_URL}/me/calendar/events/${eventId}`, {
+    const response = await fetch(`${BASE_URL}/me/calendar/events/${encodeURIComponent(eventId)}`, {
       method: 'DELETE',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -278,6 +278,10 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
     }
 
     return slots;
+  }
+
+  private escapeHtml(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
   private mapEvent(raw: any): CalendarEvent {

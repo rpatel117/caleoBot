@@ -22,14 +22,12 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "@slack/bolt": "^4.2.1",
-    "crypto-js": "^4.2.0",
     "dotenv": "^16.3.1",
     "googleapis": "^144.0.0",
     "pg": "^8.16.3",
     "stripe": "^17.7.0"
   },
   "devDependencies": {
-    "@types/crypto-js": "^4.2.2",
     "@types/node": "^20.4.5",
     "@types/pg": "^8.11.6",
     "nodemon": "^3.0.1",

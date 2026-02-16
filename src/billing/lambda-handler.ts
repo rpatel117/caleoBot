@@ -1,6 +1,7 @@
 import { createCheckoutSession, constructWebhookEvent } from './stripe';
 import { formatBalanceForDisplay } from './usage-tracker';
 import { repository } from '../database/repository';
+import { verifyCheckoutParams } from './checkout-signer';
 
 interface LambdaEvent {
   httpMethod: string;
@@ -80,12 +81,13 @@ async function handleCheckout(event: LambdaEvent): Promise<LambdaResponse> {
   const amountCents = parseInt(qs.amount || '0', 10);
   const userId = qs.user || '';
   const dbUserId = qs.dbUser || '';
+  const sig = qs.sig || '';
 
-  if (!amountCents || !userId || !dbUserId) {
+  if (!amountCents || !userId || !dbUserId || !sig) {
     return {
       statusCode: 400,
       headers: jsonHeaders,
-      body: JSON.stringify({ error: 'Missing amount, user, or dbUser parameter' }),
+      body: JSON.stringify({ error: 'Missing required parameters' }),
     };
   }
 
@@ -94,6 +96,14 @@ async function handleCheckout(event: LambdaEvent): Promise<LambdaResponse> {
       statusCode: 400,
       headers: jsonHeaders,
       body: JSON.stringify({ error: 'Amount must be 500, 1000, or 2000 cents' }),
+    };
+  }
+
+  if (!verifyCheckoutParams(amountCents, userId, dbUserId, sig)) {
+    return {
+      statusCode: 403,
+      headers: jsonHeaders,
+      body: JSON.stringify({ error: 'Invalid signature — use /caleo-billing in Slack' }),
     };
   }
 

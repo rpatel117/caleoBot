@@ -2,6 +2,7 @@ import { OAuthProvider } from '../types';
 import { TokenSet } from '../../types';
 import { EncryptionService } from '../../encryption';
 import { repository } from '../../database/repository';
+import { createSignedState } from '../../auth/oauth-state';
 
 export class GoogleOAuth implements OAuthProvider {
   private clientId: string;
@@ -23,16 +24,14 @@ export class GoogleOAuth implements OAuthProvider {
   generateAuthUrl(userId: string, workspaceId: string, redirectUri: string): string {
     console.log(`[Google OAuth] Generating auth URL — redirect_uri: ${redirectUri}, client_id len=${this.clientId.length}`);
 
-    const state = Buffer.from(JSON.stringify({
-      userId,
-      workspaceId,
-      provider: 'google',
-    })).toString('base64');
+    const state = createSignedState({ userId, workspaceId, provider: 'google' });
 
     const scopes = [
       'https://www.googleapis.com/auth/calendar',
       'https://www.googleapis.com/auth/gmail.compose',
       'https://www.googleapis.com/auth/directory.readonly',
+      'https://www.googleapis.com/auth/contacts.readonly',
+      'https://www.googleapis.com/auth/contacts.other.readonly',
     ].join(' ');
 
     const params = new URLSearchParams({

@@ -5,6 +5,7 @@ import { CalendarProvider } from '../calendar/types';
 import { EmailProvider } from '../email/types';
 import { DataSanitizer } from '../data-sanitizer';
 import { repository } from '../database/repository';
+import { PLAN_LIMITS } from '../billing/plans';
 
 interface ProviderSet {
   calendar?: CalendarProvider;
@@ -20,12 +21,16 @@ export interface AgentContext {
   slackClient?: any;
   slackChannelId?: string;
   slackThreadTs?: string;
+  userType?: string;
+  workspaceId?: string;
+  actionsPerformed: { meetingsCreated: number; meetingsUpdated: number; meetingsDeleted: number };
 }
 
 export interface AgentResponse {
   text: string;
   totalUsage: { inputTokens: number; outputTokens: number };
   toolIterations: number;
+  actionsPerformed: { meetingsCreated: number; meetingsUpdated: number; meetingsDeleted: number };
 }
 
 const toolDefinitions: Anthropic.Tool[] = [
@@ -225,7 +230,7 @@ const toolDefinitions: Anthropic.Tool[] = [
   },
   {
     name: 'search_people',
-    description: 'Search for people by name across the Slack workspace directory and the organization\'s calendar provider directory (Google/Microsoft). Use this when the user refers to someone by plain name (e.g. "Kunal", "Sarah from marketing") instead of an @mention. Results are deduplicated and ranked by relevance. Returns name and email for each match. IMPORTANT: Only display the exact results returned by this tool. Never fabricate or guess names/emails if the tool returns an error or empty results.',
+    description: 'Search for people by name across the Slack workspace directory, the organization\'s calendar provider directory (Google/Microsoft), saved contacts, and email history (people the user has communicated with). Use this when the user refers to someone by plain name (e.g. "Kunal", "Sarah from marketing", "my client John") instead of an @mention. Results are deduplicated and ranked by relevance. Returns name and email for each match. IMPORTANT: Only display the exact results returned by this tool. Never fabricate or guess names/emails if the tool returns an error or empty results.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -282,6 +287,11 @@ export class AnthropicAgent {
   ): Promise<AgentResponse> {
     const totalUsage = { inputTokens: 0, outputTokens: 0 };
     let toolIterations = 0;
+
+    // Initialize action counters if not already set
+    if (!context.actionsPerformed) {
+      context.actionsPerformed = { meetingsCreated: 0, meetingsUpdated: 0, meetingsDeleted: 0 };
+    }
 
     try {
     const messages: Anthropic.MessageParam[] = [];
@@ -364,7 +374,7 @@ export class AnthropicAgent {
     );
     const text = textBlocks.map((b) => b.text).join('\n') || 'I was unable to generate a response.';
 
-    return { text, totalUsage, toolIterations };
+    return { text, totalUsage, toolIterations, actionsPerformed: context.actionsPerformed };
     } catch (error: any) {
       console.error('Anthropic API error:', error?.message || error);
       let text: string;
@@ -377,7 +387,7 @@ export class AnthropicAgent {
       } else {
         text = `Sorry, I encountered an error processing your request: ${error?.message || 'Unknown error'}`;
       }
-      return { text, totalUsage, toolIterations };
+      return { text, totalUsage, toolIterations, actionsPerformed: context.actionsPerformed };
     }
   }
 
@@ -512,6 +522,25 @@ export class AnthropicAgent {
       }
 
       case 'create_meeting': {
+        // Meeting limit pre-check
+        if (context.userType !== 'developer' && context.workspaceId) {
+          try {
+            const plan = await repository.getWorkspacePlan(context.workspaceId);
+            const limits = PLAN_LIMITS[plan] || PLAN_LIMITS.free;
+            if (limits.meetingsPerMonth !== -1) {
+              const usage = await repository.getMonthlyUsage(context.workspaceId);
+              if (usage.meetingsCreated >= limits.meetingsPerMonth) {
+                return {
+                  success: false,
+                  error: `You've reached your free plan limit of ${limits.meetingsPerMonth} meetings this month. Upgrade to Pro to continue. Use \`/caleo-upgrade\` to learn more.`,
+                };
+              }
+            }
+          } catch (err: any) {
+            console.error('Meeting limit check failed, allowing:', err?.message);
+          }
+        }
+
         const provider = this.getProvider(context, input.provider);
         if (!provider?.calendar || !provider.accessToken) {
           return { success: false, error: this.getProviderError(context, input.provider) };
@@ -537,6 +566,7 @@ export class AnthropicAgent {
             isOnlineMeeting: input.isOnlineMeeting ?? true,
             timezone: tz,
           });
+          context.actionsPerformed.meetingsCreated++;
           return { success: true, meetingId: event.id, webLink: event.webLink };
         } catch (error: any) {
           return { success: false, error: this.formatApiError(error, provider) };
@@ -558,6 +588,7 @@ export class AnthropicAgent {
           if (input.location) updates.location = input.location;
           if (input.body) updates.body = input.body;
           await provider.calendar.updateEvent(provider.accessToken, input.meetingId, updates);
+          context.actionsPerformed.meetingsUpdated++;
           return { success: true, meetingId: input.meetingId };
         } catch (error: any) {
           return { success: false, error: this.formatApiError(error, provider) };
@@ -571,6 +602,7 @@ export class AnthropicAgent {
         }
         try {
           await provider.calendar.deleteEvent(provider.accessToken, input.meetingId);
+          context.actionsPerformed.meetingsDeleted++;
           return { success: true, meetingId: input.meetingId };
         } catch (error: any) {
           return { success: false, error: this.formatApiError(error, provider) };
@@ -946,34 +978,99 @@ export class AnthropicAgent {
   }
 
   private async searchPeopleGoogle(accessToken: string, query: string): Promise<any> {
-    const params = new URLSearchParams({
-      query,
-      readMask: 'names,emailAddresses',
-      sources: 'DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE',
-      pageSize: '5',
-    });
-    const url = `https://people.googleapis.com/v1/people:searchDirectoryPeople?${params.toString()}`;
-    const response = await fetch(url, {
-      headers: { 'Authorization': `Bearer ${accessToken}` },
-    });
+    const headers = { 'Authorization': `Bearer ${accessToken}` };
+    const notes: string[] = [];
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      const error: any = new Error(`Google People search failed: ${response.status} - ${errorText}`);
-      error.status = response.status;
-      throw error;
+    const extractPeople = (data: any, listKey: string) =>
+      (data[listKey] || [])
+        .map((person: any) => {
+          const name = person.names?.[0]?.displayName || 'Unknown';
+          const email = person.emailAddresses?.[0]?.value || null;
+          return { name, email };
+        })
+        .filter((p: any) => p.email);
+
+    // Search 3 sources in parallel: Directory, Contacts, Other Contacts
+    const [directoryResult, contactsResult, otherContactsResult] = await Promise.allSettled([
+      // 1. Directory (existing) — org domain profiles
+      (async () => {
+        const params = new URLSearchParams({
+          query,
+          readMask: 'names,emailAddresses',
+          sources: 'DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE',
+          pageSize: '5',
+        });
+        const resp = await fetch(`https://people.googleapis.com/v1/people:searchDirectoryPeople?${params}`, { headers });
+        if (!resp.ok) {
+          const errorText = await resp.text();
+          if (resp.status === 403) {
+            notes.push('Directory search unavailable (missing directory.readonly scope — reconnect Google via /caleo-auth)');
+            return [];
+          }
+          const error: any = new Error(`Google Directory search failed: ${resp.status} - ${errorText}`);
+          error.status = resp.status;
+          throw error;
+        }
+        return extractPeople(await resp.json(), 'people');
+      })(),
+
+      // 2. Contacts — saved Google Contacts
+      (async () => {
+        const params = new URLSearchParams({
+          query,
+          readMask: 'names,emailAddresses',
+          pageSize: '5',
+        });
+        const resp = await fetch(`https://people.googleapis.com/v1/people:searchContacts?${params}`, { headers });
+        if (!resp.ok) {
+          if (resp.status === 403) {
+            notes.push('Contacts search unavailable (missing contacts.readonly scope — reconnect Google via /caleo-auth)');
+            return [];
+          }
+          const errorText = await resp.text();
+          const error: any = new Error(`Google Contacts search failed: ${resp.status} - ${errorText}`);
+          error.status = resp.status;
+          throw error;
+        }
+        return extractPeople(await resp.json(), 'results');
+      })(),
+
+      // 3. Other Contacts — auto-saved from Gmail interactions
+      (async () => {
+        const params = new URLSearchParams({
+          query,
+          readMask: 'names,emailAddresses',
+          pageSize: '5',
+        });
+        const resp = await fetch(`https://people.googleapis.com/v1/otherContacts:search?${params}`, { headers });
+        if (!resp.ok) {
+          if (resp.status === 403) {
+            notes.push('Email contacts search unavailable (missing contacts.other.readonly scope — reconnect Google via /caleo-auth)');
+            return [];
+          }
+          const errorText = await resp.text();
+          const error: any = new Error(`Google Other Contacts search failed: ${resp.status} - ${errorText}`);
+          error.status = resp.status;
+          throw error;
+        }
+        return extractPeople(await resp.json(), 'results');
+      })(),
+    ]);
+
+    const results = [
+      ...(directoryResult.status === 'fulfilled' ? directoryResult.value : []),
+      ...(contactsResult.status === 'fulfilled' ? contactsResult.value : []),
+      ...(otherContactsResult.status === 'fulfilled' ? otherContactsResult.value : []),
+    ];
+
+    // Collect rejection reasons as notes
+    for (const [label, r] of [['Directory', directoryResult], ['Contacts', contactsResult], ['Other Contacts', otherContactsResult]] as const) {
+      if (r.status === 'rejected') {
+        notes.push(`${label} search failed: ${r.reason?.message || r.reason}`);
+      }
     }
 
-    const data = await response.json() as any;
-    const results = (data.people || [])
-      .map((person: any) => {
-        const name = person.names?.[0]?.displayName || 'Unknown';
-        const email = person.emailAddresses?.[0]?.value || null;
-        return { name, email };
-      })
-      .filter((p: any) => p.email);
-
-    return { results };
+    return { results, ...(notes.length > 0 && { notes }) };
   }
 
   private formatEvent(event: any, timezone: string): any {
