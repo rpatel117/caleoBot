@@ -39,6 +39,7 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
         timeZone: params.timezone || 'UTC',
       },
       isOnlineMeeting: params.isOnlineMeeting ?? true,
+      onlineMeetingProvider: (params.isOnlineMeeting ?? true) ? 'teamsForBusiness' : undefined,
       responseRequested: true,
       body: {
         contentType: 'html',
@@ -59,11 +60,14 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
       body.location = { displayName: params.location };
     }
 
+    console.log(`[Microsoft] Creating event "${params.subject}" with ${params.attendees?.length || 0} attendees: ${JSON.stringify(params.attendees)}`);
+
     const response = await fetch(`${BASE_URL}/me/calendar/events`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
+        'Prefer': 'outlook.timezone="UTC"',
       },
       body: JSON.stringify(body),
     });
@@ -74,6 +78,7 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
     }
 
     const data = await response.json() as any;
+    console.log(`[Microsoft] Event created: ${data.id}, attendees in response: ${data.attendees?.length || 0}, onlineMeeting: ${!!data.onlineMeeting?.joinUrl}`);
     return this.mapEvent(data);
   }
 
@@ -100,11 +105,14 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
       body.body = { content: updates.body, contentType: 'text' };
     }
 
+    console.log(`[Microsoft] Updating event ${eventId} with ${updates.attendees?.length || 0} attendees`);
+
     const response = await fetch(`${BASE_URL}/me/calendar/events/${encodeURIComponent(eventId)}`, {
       method: 'PATCH',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
+        'Prefer': 'outlook.timezone="UTC"',
       },
       body: JSON.stringify(body),
     });
@@ -115,10 +123,13 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
     }
 
     const data = await response.json() as any;
+    console.log(`[Microsoft] Event updated: ${data.id}, attendees: ${data.attendees?.length || 0}`);
     return this.mapEvent(data);
   }
 
   async deleteEvent(accessToken: string, eventId: string): Promise<void> {
+    console.log(`[Microsoft] Deleting event ${eventId}`);
+
     const response = await fetch(`${BASE_URL}/me/calendar/events/${encodeURIComponent(eventId)}`, {
       method: 'DELETE',
       headers: {

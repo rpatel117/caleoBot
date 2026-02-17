@@ -61,9 +61,11 @@ export class GoogleCalendarProvider implements CalendarProvider {
       };
     }
 
-    const url = params.isOnlineMeeting
-      ? `${BASE_URL}/calendars/primary/events?conferenceDataVersion=1`
-      : `${BASE_URL}/calendars/primary/events`;
+    const queryParams = new URLSearchParams({ sendUpdates: 'all' });
+    if (params.isOnlineMeeting) queryParams.set('conferenceDataVersion', '1');
+    const url = `${BASE_URL}/calendars/primary/events?${queryParams}`;
+
+    console.log(`[Google] Creating event "${params.subject}" with ${params.attendees?.length || 0} attendees: ${JSON.stringify(params.attendees)}`);
 
     const response = await fetch(url, {
       method: 'POST',
@@ -80,6 +82,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
     }
 
     const data = await response.json() as any;
+    console.log(`[Google] Event created: ${data.id}, attendees in response: ${data.attendees?.length || 0}`);
     return this.mapEvent(data);
   }
 
@@ -103,7 +106,9 @@ export class GoogleCalendarProvider implements CalendarProvider {
       body.description = updates.body;
     }
 
-    const response = await fetch(`${BASE_URL}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
+    console.log(`[Google] Updating event ${eventId} with ${updates.attendees?.length || 0} attendees`);
+
+    const response = await fetch(`${BASE_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
       method: 'PATCH',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -122,7 +127,9 @@ export class GoogleCalendarProvider implements CalendarProvider {
   }
 
   async deleteEvent(accessToken: string, eventId: string): Promise<void> {
-    const response = await fetch(`${BASE_URL}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
+    console.log(`[Google] Deleting event ${eventId}`);
+
+    const response = await fetch(`${BASE_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${accessToken}` },
     });

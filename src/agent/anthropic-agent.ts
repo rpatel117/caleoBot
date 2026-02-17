@@ -556,6 +556,7 @@ export class AnthropicAgent {
           // Strip Z/offset — the LLM generates times in the user's local timezone
           const startLocal = input.startTime.replace(/Z$/, '').replace(/[+-]\d{2}:?\d{2}$/, '');
           const endLocal = input.endTime.replace(/Z$/, '').replace(/[+-]\d{2}:?\d{2}$/, '');
+          console.log(`[Agent] create_meeting: subject="${input.subject}", attendees=${JSON.stringify(input.attendees || [])}, provider=${provider.providerType}`);
           const event = await provider.calendar.createEvent(provider.accessToken, {
             subject: input.subject,
             start: startLocal,
@@ -567,7 +568,14 @@ export class AnthropicAgent {
             timezone: tz,
           });
           context.actionsPerformed.meetingsCreated++;
-          return { success: true, meetingId: event.id, webLink: event.webLink };
+          return {
+            success: true,
+            meetingId: event.id,
+            webLink: event.webLink,
+            onlineMeetingUrl: event.onlineMeetingUrl,
+            attendeesInvited: (input.attendees || []).length,
+            attendeeEmails: input.attendees || [],
+          };
         } catch (error: any) {
           return { success: false, error: this.formatApiError(error, provider) };
         }
@@ -589,7 +597,7 @@ export class AnthropicAgent {
           if (input.body) updates.body = input.body;
           await provider.calendar.updateEvent(provider.accessToken, input.meetingId, updates);
           context.actionsPerformed.meetingsUpdated++;
-          return { success: true, meetingId: input.meetingId };
+          return { success: true, meetingId: input.meetingId, attendeesUpdated: input.attendees?.length || 0 };
         } catch (error: any) {
           return { success: false, error: this.formatApiError(error, provider) };
         }
