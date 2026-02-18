@@ -120,3 +120,7 @@ CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_stripe_events_stripe_id ON stripe_events(stripe_event_id);
+
+-- Cross-workspace email lookup (case-insensitive) for cross-org meeting support
+-- In production, use CREATE INDEX CONCURRENTLY to avoid table locks
+CREATE INDEX IF NOT EXISTS idx_users_email_lower ON users(LOWER(email));

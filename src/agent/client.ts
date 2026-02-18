@@ -2,6 +2,7 @@ import { AnthropicAgent, AgentResponse } from './anthropic-agent';
 import { UserContext, CalendarProviderType } from '../types';
 import { CalendarProvider } from '../calendar/types';
 import { EmailProvider } from '../email/types';
+import { CrossOrgService } from '../calendar/cross-org';
 
 export interface SlackContext {
   client: any;
@@ -23,7 +24,8 @@ export interface IAgentClient {
     dbUserId?: string,
     systemPrompt?: string,
     slackContext?: SlackContext,
-    userType?: string
+    userType?: string,
+    crossOrgService?: CrossOrgService
   ): Promise<AgentResponse>;
 }
 
@@ -47,7 +49,8 @@ export class LocalAgentClient implements IAgentClient {
     dbUserId?: string,
     systemPrompt?: string,
     slackContext?: SlackContext,
-    userType?: string
+    userType?: string,
+    crossOrgService?: CrossOrgService
   ): Promise<AgentResponse> {
     console.log('Using LOCAL agent service (Anthropic)');
     return this.agent.processMessage(userMessage, {
@@ -60,6 +63,7 @@ export class LocalAgentClient implements IAgentClient {
       userType,
       workspaceId: userContext.workspaceId,
       actionsPerformed: { meetingsCreated: 0, meetingsUpdated: 0, meetingsDeleted: 0 },
+      crossOrgService,
     }, conversationHistory, systemPrompt);
   }
 }
@@ -84,7 +88,8 @@ export class RemoteAgentClient implements IAgentClient {
     _dbUserId?: string,
     systemPrompt?: string,
     _slackContext?: SlackContext,
-    _userType?: string
+    _userType?: string,
+    _crossOrgService?: CrossOrgService
   ): Promise<AgentResponse> {
     console.log('Using REMOTE agent service (AWS Lambda)');
 

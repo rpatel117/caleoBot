@@ -4,6 +4,10 @@ import { MicrosoftCalendarProvider } from '../calendar/microsoft/provider';
 import { GoogleCalendarProvider } from '../calendar/google/provider';
 import { MicrosoftEmailProvider } from '../email/microsoft';
 import { GoogleEmailProvider } from '../email/google';
+import { CrossOrgService } from '../calendar/cross-org';
+import { GoogleOAuth } from '../calendar/google/oauth';
+import { MicrosoftOAuth } from '../calendar/microsoft/oauth';
+import { repository } from '../database/repository';
 
 interface LambdaEvent {
   body?: string;
@@ -17,6 +21,20 @@ interface LambdaResponse {
 }
 
 const agent = new AnthropicAgent();
+
+// Cross-org service (only available if DB is configured)
+let crossOrgService: CrossOrgService | undefined;
+try {
+  if (process.env.DATABASE_URL) {
+    crossOrgService = new CrossOrgService({
+      googleOAuth: new GoogleOAuth(),
+      microsoftOAuth: new MicrosoftOAuth(),
+      repository,
+    });
+  }
+} catch (err) {
+  console.warn('[Lambda] CrossOrgService not available:', err);
+}
 
 export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
   const corsHeaders = {
@@ -88,6 +106,7 @@ export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
         slackChannelId,
         slackThreadTs,
         actionsPerformed: { meetingsCreated: 0, meetingsUpdated: 0, meetingsDeleted: 0 },
+        crossOrgService,
       },
       conversationHistory || [],
       systemPrompt

@@ -86,6 +86,10 @@ const microsoftOAuth = new MicrosoftOAuth();
 const googleOAuth = new GoogleOAuth();
 const encryption = new EncryptionService();
 
+// Cross-org meeting service
+import { CrossOrgService } from '../calendar/cross-org';
+const crossOrgService = new CrossOrgService({ googleOAuth, microsoftOAuth, repository });
+
 function getRedirectUri(): string {
   if (process.env.OAUTH_REDIRECT_URI) return process.env.OAUTH_REDIRECT_URI;
   const base = process.env.NGROK_URL || `http://localhost:${process.env.SLACK_PORT || 3000}`;
@@ -606,7 +610,8 @@ async function processUserMessage(args: {
     dbUserId,
     systemPrompt,
     slackContext,
-    userType
+    userType,
+    crossOrgService
   );
   console.log(`Agent responded (${agentResponse.text.length} chars, ${agentResponse.totalUsage.inputTokens}+${agentResponse.totalUsage.outputTokens} tokens)`);
 

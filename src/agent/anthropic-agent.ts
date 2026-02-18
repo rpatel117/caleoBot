@@ -6,6 +6,7 @@ import { EmailProvider } from '../email/types';
 import { DataSanitizer } from '../data-sanitizer';
 import { repository } from '../database/repository';
 import { PLAN_LIMITS } from '../billing/plans';
+import { CrossOrgService } from '../calendar/cross-org';
 
 interface ProviderSet {
   calendar?: CalendarProvider;
@@ -24,6 +25,7 @@ export interface AgentContext {
   userType?: string;
   workspaceId?: string;
   actionsPerformed: { meetingsCreated: number; meetingsUpdated: number; meetingsDeleted: number };
+  crossOrgService?: CrossOrgService;
 }
 
 export interface AgentResponse {
@@ -556,12 +558,55 @@ export class AnthropicAgent {
           // Strip Z/offset — the LLM generates times in the user's local timezone
           const startLocal = input.startTime.replace(/Z$/, '').replace(/[+-]\d{2}:?\d{2}$/, '');
           const endLocal = input.endTime.replace(/Z$/, '').replace(/[+-]\d{2}:?\d{2}$/, '');
-          console.log(`[Agent] create_meeting: subject="${input.subject}", attendees=${JSON.stringify(input.attendees || [])}, provider=${provider.providerType}`);
+          const attendees: string[] = input.attendees || [];
+          console.log(`[Agent] create_meeting: subject="${input.subject}", attendees=${JSON.stringify(attendees)}, provider=${provider.providerType}`);
+
+          // Cross-org path: create native events on each Caleo attendee's calendar
+          if (context.crossOrgService && attendees.length > 0) {
+            try {
+              const crossResult = await context.crossOrgService.createCrossOrgEvent(
+                provider.accessToken,
+                provider.providerType,
+                context.userContext.email,
+                {
+                  subject: input.subject,
+                  start: startLocal,
+                  end: endLocal,
+                  location: input.location,
+                  body: eventBody,
+                  isOnlineMeeting: input.isOnlineMeeting ?? true,
+                  timezone: tz,
+                  allAttendeeEmails: attendees,
+                }
+              );
+              context.actionsPerformed.meetingsCreated++;
+
+              const nativeCreated = crossResult.attendeeResults.filter(r => r.success);
+              const warnings = crossResult.attendeeResults.filter(r => !r.success).map(r => `${r.email}: ${r.error}`);
+
+              const result: any = {
+                success: true,
+                meetingId: crossResult.organizerEvent.id,
+                webLink: crossResult.organizerEvent.webLink,
+                onlineMeetingUrl: crossResult.onlineMeetingUrl,
+                attendeesInvited: attendees.length,
+                attendeeEmails: attendees,
+                standardInvites: crossResult.standardInviteEmails,
+                nativeEventsCreated: nativeCreated.map(r => r.email),
+              };
+              if (warnings.length > 0) result.warnings = warnings;
+              return result;
+            } catch (crossErr: any) {
+              console.error('[Agent] Cross-org create failed, falling back to standard:', crossErr?.message);
+              // Fall through to standard single-provider creation
+            }
+          }
+
           const event = await provider.calendar.createEvent(provider.accessToken, {
             subject: input.subject,
             start: startLocal,
             end: endLocal,
-            attendees: input.attendees || [],
+            attendees,
             location: input.location,
             body: eventBody,
             isOnlineMeeting: input.isOnlineMeeting ?? true,
@@ -573,8 +618,8 @@ export class AnthropicAgent {
             meetingId: event.id,
             webLink: event.webLink,
             onlineMeetingUrl: event.onlineMeetingUrl,
-            attendeesInvited: (input.attendees || []).length,
-            attendeeEmails: input.attendees || [],
+            attendeesInvited: attendees.length,
+            attendeeEmails: attendees,
           };
         } catch (error: any) {
           return { success: false, error: this.formatApiError(error, provider) };
@@ -623,6 +668,24 @@ export class AnthropicAgent {
           return { available: false, error: this.getProviderError(context, input.provider) };
         }
         try {
+          // Cross-org federated availability: check Caleo users via their own tokens
+          if (context.crossOrgService && input.attendees && input.attendees.length > 0) {
+            try {
+              const fedResult = await context.crossOrgService.checkFederatedAvailability(
+                provider.accessToken,
+                provider.providerType,
+                input.attendees,
+                context.userContext.email,
+                new Date(input.startTime),
+                new Date(input.endTime)
+              );
+              return fedResult;
+            } catch (fedErr: any) {
+              console.error('[Agent] Federated availability failed, falling back to standard:', fedErr?.message);
+              // Fall through to standard check
+            }
+          }
+
           const result = await provider.calendar.checkAvailability(
             provider.accessToken,
             new Date(input.startTime),
@@ -674,10 +737,23 @@ export class AnthropicAgent {
           const workStart = input.workingHoursStart || '09:00';
           const workEnd = input.workingHoursEnd || '17:00';
 
-          // Get availability for all attendees (includes per-attendee breakdown)
-          const availability = await provider.calendar.checkAvailability(
-            provider.accessToken, startDate, endDate, emails
-          );
+          // Get availability — use federated check if cross-org service available
+          let availability;
+          if (context.crossOrgService && emails.length > 0) {
+            try {
+              availability = await context.crossOrgService.checkFederatedAvailability(
+                provider.accessToken, provider.providerType, emails,
+                context.userContext.email, startDate, endDate
+              );
+            } catch (fedErr: any) {
+              console.error('[Agent] Federated availability failed in mutual free time, falling back:', fedErr?.message);
+            }
+          }
+          if (!availability) {
+            availability = await provider.calendar.checkAvailability(
+              provider.accessToken, startDate, endDate, emails
+            );
+          }
 
           // Also get the requesting user's own events as busy periods
           const ownEvents = await provider.calendar.getEvents(provider.accessToken, startDate, endDate);
@@ -856,7 +932,22 @@ export class AnthropicAgent {
           console.warn('[search_people] No slackClient available — skipping Slack search');
         }
 
-        // 3. Deduplicate by email (prefer calendar provider over Slack)
+        // 3. Search Caleo DB across all workspaces
+        if (context.crossOrgService) {
+          try {
+            const caleoResults = await repository.searchUsersByName(input.query);
+            console.log(`[search_people] Caleo DB returned ${caleoResults.length} result(s)`);
+            for (const r of caleoResults) {
+              if (r.email) {
+                allResults.push({ name: r.display_name || r.email, email: r.email, source: 'caleo' });
+              }
+            }
+          } catch (error: any) {
+            console.error('[search_people] Caleo DB search failed:', error?.message);
+          }
+        }
+
+        // 4. Deduplicate by email (prefer calendar provider over Slack over Caleo)
         const seen = new Set<string>();
         const deduped: Array<{ name: string; email: string; source: string }> = [];
         for (const r of allResults) {

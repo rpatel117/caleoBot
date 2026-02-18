@@ -467,6 +467,58 @@ export class Repository {
     return { meetingsCreated: 0, meetingsUpdated: 0, meetingsDeleted: 0, messagesSent: 0 };
   }
 
+  // ---------- Cross-org lookups ----------
+
+  /**
+   * Look up attendee emails across ALL workspaces, returning which are Caleo users
+   * and what calendar providers they have connected.
+   */
+  async findCaleoUsersByEmails(emails: string[]): Promise<Array<{
+    email: string;
+    dbUserId: string;
+    displayName: string | null;
+    timezone: string;
+    providers: Array<'google' | 'microsoft'>;
+  }>> {
+    if (emails.length === 0) return [];
+    const normalized = emails.map(e => e.toLowerCase());
+
+    const result = await pool.query(
+      `SELECT u.id AS db_user_id, u.email, u.display_name, u.timezone,
+              COALESCE(array_agg(DISTINCT ot.provider) FILTER (WHERE ot.provider IS NOT NULL), '{}') AS providers
+       FROM users u
+       LEFT JOIN oauth_tokens ot ON ot.user_id = u.id
+       WHERE LOWER(u.email) = ANY($1)
+       GROUP BY u.id, u.email, u.display_name, u.timezone`,
+      [normalized]
+    );
+
+    return result.rows.map((row: any) => ({
+      email: row.email,
+      dbUserId: row.db_user_id,
+      displayName: row.display_name,
+      timezone: row.timezone,
+      providers: row.providers.filter((p: string) => p === 'google' || p === 'microsoft'),
+    }));
+  }
+
+  /**
+   * Search Caleo users by name or email across all workspaces.
+   * Used by search_people to find cross-org contacts.
+   */
+  async searchUsersByName(query: string, limit: number = 5): Promise<any[]> {
+    const result = await pool.query(
+      `SELECT DISTINCT ON (LOWER(email)) display_name, email
+       FROM users
+       WHERE email IS NOT NULL AND email NOT LIKE '%@slack.local'
+         AND (LOWER(display_name) LIKE $1 OR LOWER(email) LIKE $1)
+       ORDER BY LOWER(email), created_at DESC
+       LIMIT $2`,
+      [`%${query.toLowerCase()}%`, limit]
+    );
+    return result.rows;
+  }
+
   // Health check
   async testConnection(): Promise<boolean> {
     try {
