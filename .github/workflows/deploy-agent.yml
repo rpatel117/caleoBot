@@ -8,9 +8,12 @@ on:
       - 'src/calendar/**'
       - 'src/email/**'
       - 'src/database/**'
+      - 'src/billing/**'
       - 'src/encryption.ts'
+      - 'src/auth/**'
       - 'src/types.ts'
       - 'package.json'
+      - 'package-lock.json'
 
 permissions:
   id-token: write

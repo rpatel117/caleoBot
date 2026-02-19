@@ -20,6 +20,8 @@ import { signCheckoutParams } from '../billing/checkout-signer';
 import { CalendarEvent } from '../calendar/types';
 import { verifyAndDecodeState } from '../auth/oauth-state';
 import { RateLimiter } from '../rate-limiter';
+import { createCheckoutSession, constructWebhookEvent } from '../billing/stripe';
+import { verifyCheckoutParams } from '../billing/checkout-signer';
 
 const { App, ExpressReceiver } = require('@slack/bolt') as {
   App: any;
@@ -375,6 +377,105 @@ const httpServer = http.createServer(async (req, res) => {
         error: error instanceof Error ? error.message : 'Unknown error',
       }));
     }
+    return;
+  }
+
+  // --- Billing routes ---
+
+  if (url.pathname === '/billing/checkout' && req.method === 'GET') {
+    try {
+      const amountCents = parseInt(url.searchParams.get('amount') || '0', 10);
+      const userId = url.searchParams.get('user') || '';
+      const dbUserId = url.searchParams.get('dbUser') || '';
+      const sig = url.searchParams.get('sig') || '';
+
+      if (!amountCents || !userId || !dbUserId || !sig) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required parameters' }));
+        return;
+      }
+      if (![500, 1000, 2000].includes(amountCents)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid amount' }));
+        return;
+      }
+      if (!verifyCheckoutParams(amountCents, userId, dbUserId, sig)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid signature — use /caleo-billing in Slack' }));
+        return;
+      }
+
+      const baseUrl = process.env.BILLING_BASE_URL || process.env.NGROK_URL || `http://localhost:${httpPort}`;
+      const checkoutUrl = await createCheckoutSession({
+        userId, dbUserId, amountCents,
+        successUrl: `${baseUrl}/billing/success`,
+        cancelUrl: `${baseUrl}/billing/cancel`,
+      });
+
+      res.writeHead(302, { Location: checkoutUrl });
+      res.end();
+    } catch (error) {
+      console.error('Billing checkout error:', error);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'Checkout failed' }));
+    }
+    return;
+  }
+
+  if (url.pathname === '/billing/webhook' && req.method === 'POST') {
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) { chunks.push(chunk as Buffer); }
+      const rawBody = Buffer.concat(chunks).toString('utf-8');
+      const signature = req.headers['stripe-signature'] as string || '';
+
+      const stripeEvent = constructWebhookEvent(rawBody, signature);
+
+      if (stripeEvent.type === 'checkout.session.completed') {
+        const session = stripeEvent.data.object as any;
+        const eventDbUserId = session.metadata?.dbUserId;
+        const amountCents = parseInt(session.metadata?.amountCents || '0', 10);
+
+        if (eventDbUserId && amountCents) {
+          const alreadyProcessed = await repository.checkStripeEventProcessed(stripeEvent.id);
+          if (!alreadyProcessed) {
+            await repository.creditBalance(eventDbUserId, amountCents);
+            await repository.markStripeEventProcessed(stripeEvent.id, stripeEvent.type, eventDbUserId, amountCents);
+            const balance = await repository.getBalance(eventDbUserId);
+            console.log(`[Stripe] Credited ${(amountCents / 100).toFixed(2)} to ${eventDbUserId}. Balance: ${(balance.balance_cents / 100).toFixed(2)}`);
+          }
+        }
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ received: true }));
+    } catch (error) {
+      console.error('Stripe webhook error:', error);
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Webhook verification failed' }));
+    }
+    return;
+  }
+
+  if (url.pathname === '/billing/success') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(`<!DOCTYPE html><html><head><title>Payment Successful</title>
+<style>body{font-family:-apple-system,sans-serif;text-align:center;padding:60px 20px;background:#f8faf9}
+h1{color:#2d7a4f}p{color:#555;font-size:18px}.icon{font-size:64px}</style></head><body>
+<div class="icon">&#10003;</div><h1>Payment Successful!</h1>
+<p>Your Caleo balance has been topped up.</p>
+<p>You can close this window and return to Slack.</p></body></html>`);
+    return;
+  }
+
+  if (url.pathname === '/billing/cancel') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(`<!DOCTYPE html><html><head><title>Payment Cancelled</title>
+<style>body{font-family:-apple-system,sans-serif;text-align:center;padding:60px 20px;background:#faf8f8}
+h1{color:#888}p{color:#555;font-size:18px}.icon{font-size:64px}</style></head><body>
+<div class="icon">&#10007;</div><h1>Payment Cancelled</h1>
+<p>No charge was made. You can close this window and return to Slack.</p>
+<p>Use <code>/caleo-billing</code> in Slack to try again.</p></body></html>`);
     return;
   }
 

@@ -8,10 +8,14 @@ on:
       - 'src/agent/client.ts'
       - 'src/agent/config.ts'
       - 'src/database/**'
+      - 'src/billing/**'
+      - 'src/calendar/**'
       - 'src/encryption.ts'
+      - 'src/auth/**'
       - 'src/types.ts'
       - 'Dockerfile'
       - 'package.json'
+      - 'package-lock.json'
 
   workflow_dispatch:
 
