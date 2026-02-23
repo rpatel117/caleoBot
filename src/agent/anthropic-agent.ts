@@ -539,7 +539,8 @@ export class AnthropicAgent {
               }
             }
           } catch (err: any) {
-            console.error('Meeting limit check failed, allowing:', err?.message);
+            console.error('Meeting limit check failed, blocking:', err?.message);
+            return { success: false, error: 'Unable to verify meeting limits. Please try again.' };
           }
         }
 

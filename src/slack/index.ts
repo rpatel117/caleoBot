@@ -5,6 +5,7 @@ import * as http from 'http';
 import { getAgentClient, SlackContext } from '../agent/client';
 import { UserContext, CalendarProviderType } from '../types';
 import { repository } from '../database/repository';
+import pool from '../database/client';
 import { EncryptionService } from '../encryption';
 import { MicrosoftOAuth } from '../calendar/microsoft/oauth';
 import { MicrosoftCalendarProvider } from '../calendar/microsoft/provider';
@@ -424,8 +425,18 @@ const httpServer = http.createServer(async (req, res) => {
 
   if (url.pathname === '/billing/webhook' && req.method === 'POST') {
     try {
+      const MAX_WEBHOOK_BODY = 65536; // 64KB max for Stripe webhooks
       const chunks: Buffer[] = [];
-      for await (const chunk of req) { chunks.push(chunk as Buffer); }
+      let totalSize = 0;
+      for await (const chunk of req) {
+        totalSize += (chunk as Buffer).length;
+        if (totalSize > MAX_WEBHOOK_BODY) {
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Payload too large' }));
+          return;
+        }
+        chunks.push(chunk as Buffer);
+      }
       const rawBody = Buffer.concat(chunks).toString('utf-8');
       const signature = req.headers['stripe-signature'] as string || '';
 
@@ -435,12 +446,11 @@ const httpServer = http.createServer(async (req, res) => {
         const session = stripeEvent.data.object as any;
         const eventDbUserId = session.metadata?.dbUserId;
         const amountCents = parseInt(session.metadata?.amountCents || '0', 10);
+        const ALLOWED_AMOUNTS = [500, 1000, 2000];
 
-        if (eventDbUserId && amountCents) {
-          const alreadyProcessed = await repository.checkStripeEventProcessed(stripeEvent.id);
-          if (!alreadyProcessed) {
-            await repository.creditBalance(eventDbUserId, amountCents);
-            await repository.markStripeEventProcessed(stripeEvent.id, stripeEvent.type, eventDbUserId, amountCents);
+        if (eventDbUserId && ALLOWED_AMOUNTS.includes(amountCents)) {
+          const credited = await repository.creditBalanceIfNotProcessed(stripeEvent.id, stripeEvent.type, eventDbUserId, amountCents);
+          if (credited) {
             const balance = await repository.getBalance(eventDbUserId);
             console.log(`[Stripe] Credited ${(amountCents / 100).toFixed(2)} to ${eventDbUserId}. Balance: ${(balance.balance_cents / 100).toFixed(2)}`);
           }
@@ -968,14 +978,18 @@ app.event('app_mention', async ({ event, body, client }: any) => {
   const eventId = body?.event_id || `mention:${event?.channel}:${event?.ts}`;
   if (!markEventAsProcessing(eventId)) return;
 
-  await processUserMessage({
-    client,
-    userId: event.user,
-    teamId: body?.team_id,
-    channel: event.channel,
-    threadTs: event.thread_ts || event.ts,
-    text: event.text || '',
-  });
+  try {
+    await processUserMessage({
+      client,
+      userId: event.user,
+      teamId: body?.team_id,
+      channel: event.channel,
+      threadTs: event.thread_ts || event.ts,
+      text: event.text || '',
+    });
+  } catch (error) {
+    console.error(`[app_mention] Unhandled error for event ${eventId}:`, error);
+  }
 });
 
 // DMs
@@ -986,15 +1000,19 @@ app.event('message', async ({ event, body, client }: any) => {
   const eventId = body?.event_id || `dm:${event?.channel}:${event?.ts}`;
   if (!markEventAsProcessing(eventId)) return;
 
-  await processUserMessage({
-    client,
-    userId: event.user,
-    teamId: body?.team_id,
-    channel: event.channel,
-    threadTs: undefined,
-    replyTs: event.ts,
-    text: event.text || '',
-  });
+  try {
+    await processUserMessage({
+      client,
+      userId: event.user,
+      teamId: body?.team_id,
+      channel: event.channel,
+      threadTs: undefined,
+      replyTs: event.ts,
+      text: event.text || '',
+    });
+  } catch (error) {
+    console.error(`[message] Unhandled error for event ${eventId}:`, error);
+  }
 });
 
 app.error((error: any) => {
@@ -1006,6 +1024,7 @@ async function start(): Promise<void> {
   httpServer.listen(httpPort, () => {
     console.log(`HTTP server on port ${httpPort} (health check + OAuth callback)`);
   });
+  httpServer.setTimeout(30000); // 30s request timeout
 
   // Start the Slack app (Socket Mode connects via WebSocket, not the HTTP port)
   await app.start();
@@ -1015,6 +1034,16 @@ async function start(): Promise<void> {
   console.log(`OAuth callback: http://localhost:${httpPort}/auth/callback`);
   console.log(`Mode: ${socketMode ? 'Socket Mode' : 'HTTP Events API'}`);
 }
+
+// Graceful shutdown for ECS SIGTERM
+function shutdown(signal: string) {
+  console.log(`${signal} received — shutting down gracefully...`);
+  httpServer.close(() => console.log('HTTP server closed'));
+  pool.end().then(() => console.log('DB pool closed')).catch(() => {});
+  setTimeout(() => { console.log('Forcing exit'); process.exit(0); }, 10000);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 start().catch((error) => {
   console.error('Failed to start Slack bot:', error);

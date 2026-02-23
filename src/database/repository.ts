@@ -344,6 +344,37 @@ export class Repository {
     );
   }
 
+  /** Atomic credit + dedup: inserts stripe event and credits balance in one transaction. Returns true if credited. */
+  async creditBalanceIfNotProcessed(stripeEventId: string, eventType: string, userId: string, amountCents: number): Promise<boolean> {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const inserted = await client.query(
+        `INSERT INTO stripe_events (stripe_event_id, event_type, user_id, amount_cents)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (stripe_event_id) DO NOTHING
+         RETURNING id`,
+        [stripeEventId, eventType, userId, amountCents]
+      );
+      if (inserted.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return false;
+      }
+      await client.query(
+        `UPDATE user_balances SET balance_cents = balance_cents + $2, updated_at = NOW()
+         WHERE user_id = $1`,
+        [userId, amountCents]
+      );
+      await client.query('COMMIT');
+      return true;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   // ---------- User type & workspace plan ----------
 
   async getUserType(userId: string): Promise<string> {
