@@ -9,7 +9,9 @@
     "build": "tsc",
     "db:init": "psql $DATABASE_URL -f src/database/schema.sql",
     "db:reset": "psql $DATABASE_URL -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' && npm run db:init",
-    "ngrok": "npx ngrok http 3000"
+    "ngrok": "npx ngrok http 3000",
+    "test": "jest --forceExit --detectOpenHandles",
+    "test:coverage": "jest --forceExit --detectOpenHandles --coverage"
   },
   "keywords": [
     "slack",
@@ -28,9 +30,12 @@
     "stripe": "^17.7.0"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.4.5",
     "@types/pg": "^8.11.6",
+    "jest": "^30.2.0",
     "nodemon": "^3.0.1",
+    "ts-jest": "^29.4.6",
     "typescript": "^5.1.6"
   }
 }

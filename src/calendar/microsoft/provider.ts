@@ -49,6 +49,16 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
       },
     };
 
+    if (params.recurrence) {
+      // Convert RRULE to Microsoft Graph recurrence pattern
+      const msRecurrence = this.parseRRuleToGraphPattern(params.recurrence, params.start);
+      if (msRecurrence) {
+        body.recurrence = msRecurrence;
+        // When using recurrence, Microsoft Graph requires start/end without explicit timezone object
+        // The recurrence range handles the dates
+      }
+    }
+
     if (params.attendees?.length) {
       body.attendees = params.attendees.map(email => ({
         emailAddress: { address: email, name: email.split('@')[0] },
@@ -289,6 +299,54 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
     }
 
     return slots;
+  }
+
+  private parseRRuleToGraphPattern(rrule: string, startDate: string): any | null {
+    try {
+      const parts: Record<string, string> = {};
+      const rule = rrule.replace('RRULE:', '');
+      for (const part of rule.split(';')) {
+        const [key, val] = part.split('=');
+        if (key && val) parts[key] = val;
+      }
+
+      const freq = parts.FREQ;
+      if (!freq) return null;
+
+      const dayMap: Record<string, string> = {
+        MO: 'monday', TU: 'tuesday', WE: 'wednesday', TH: 'thursday',
+        FR: 'friday', SA: 'saturday', SU: 'sunday',
+      };
+
+      const pattern: any = { interval: parseInt(parts.INTERVAL || '1', 10) };
+      const range: any = { startDate: startDate.split('T')[0] };
+
+      switch (freq) {
+        case 'DAILY': pattern.type = 'daily'; break;
+        case 'WEEKLY':
+          pattern.type = 'weekly';
+          pattern.daysOfWeek = parts.BYDAY
+            ? parts.BYDAY.split(',').map(d => dayMap[d] || d.toLowerCase())
+            : [dayMap[['SU','MO','TU','WE','TH','FR','SA'][new Date(startDate).getDay()]]];
+          break;
+        case 'MONTHLY': pattern.type = 'absoluteMonthly'; pattern.dayOfMonth = new Date(startDate).getDate(); break;
+        default: return null;
+      }
+
+      if (parts.COUNT) {
+        range.type = 'numbered';
+        range.numberOfOccurrences = parseInt(parts.COUNT, 10);
+      } else if (parts.UNTIL) {
+        range.type = 'endDate';
+        range.endDate = parts.UNTIL.replace(/T.*/, '').replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+      } else {
+        range.type = 'noEnd';
+      }
+
+      return { pattern, range };
+    } catch {
+      return null;
+    }
   }
 
   private escapeHtml(s: string): string {

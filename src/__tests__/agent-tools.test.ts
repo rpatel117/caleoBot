@@ -1,0 +1,545 @@
+/**
+ * Tests for new agent tools: focus time, undo, impact scoring, recurring meetings, audit log.
+ * Tests the tool execution logic directly without calling the Anthropic API.
+ */
+
+// Mock the database module before any imports
+jest.mock('../database/client', () => ({
+  __esModule: true,
+  default: { query: jest.fn(), connect: jest.fn() },
+}));
+
+jest.mock('../database/repository', () => {
+  const mockRepo = {
+    getPreferences: jest.fn().mockResolvedValue({
+      work_hours_start: '09:00',
+      work_hours_end: '17:00',
+      default_duration_minutes: 30,
+      buffer_minutes: 5,
+    }),
+    getUserSettings: jest.fn().mockResolvedValue({
+      focus_time_goal_hours: 6,
+      no_meeting_days: [0, 6], // Sun, Sat
+      status_sync_enabled: false,
+    }),
+    logAction: jest.fn().mockResolvedValue({}),
+    getWorkspacePlan: jest.fn().mockResolvedValue('pro'),
+    getMonthlyUsage: jest.fn().mockResolvedValue({ meetingsCreated: 0 }),
+  };
+  return {
+    repository: mockRepo,
+    Repository: jest.fn(() => mockRepo),
+  };
+});
+
+// Mock Anthropic SDK to avoid real API calls
+jest.mock('@anthropic-ai/sdk', () => {
+  return {
+    __esModule: true,
+    default: jest.fn().mockImplementation(() => ({
+      messages: {
+        create: jest.fn().mockResolvedValue({
+          stop_reason: 'end_turn',
+          content: [{ type: 'text', text: 'Mock response' }],
+          usage: { input_tokens: 100, output_tokens: 50 },
+        }),
+      },
+    })),
+  };
+});
+
+import { AnthropicAgent, AgentContext } from '../agent/anthropic-agent';
+import { repository } from '../database/repository';
+
+function makeContext(overrides: Partial<AgentContext> = {}): AgentContext {
+  const mockCalendar = {
+    getEvents: jest.fn().mockResolvedValue([]),
+    createEvent: jest.fn().mockResolvedValue({
+      id: 'new-evt-123',
+      subject: 'Focus Time',
+      webLink: 'https://calendar.test/evt',
+      onlineMeetingUrl: null,
+      start: { dateTime: '2026-03-02T09:00:00', timeZone: 'America/Chicago' },
+      end: { dateTime: '2026-03-02T11:00:00', timeZone: 'America/Chicago' },
+    }),
+    updateEvent: jest.fn().mockResolvedValue({}),
+    deleteEvent: jest.fn().mockResolvedValue(undefined),
+    findFreeTime: jest.fn().mockReturnValue([
+      { start: '2026-03-02T09:00:00Z', end: '2026-03-02T11:00:00Z' },
+      { start: '2026-03-02T13:00:00Z', end: '2026-03-02T15:00:00Z' },
+    ]),
+    checkAvailability: jest.fn().mockResolvedValue({ available: true, conflicts: [] }),
+  };
+
+  const providers = new Map();
+  providers.set('google', {
+    calendar: mockCalendar,
+    accessToken: 'test-token',
+    providerType: 'google',
+  });
+
+  return {
+    userContext: {
+      userId: 'U123',
+      name: 'Test User',
+      email: 'test@example.com',
+      workspaceId: 'ws-1',
+      timezone: 'America/Chicago',
+    },
+    providers,
+    dbUserId: 'db-user-1',
+    slackChannelId: 'C123',
+    slackThreadTs: '1234567890.123456',
+    actionsPerformed: { meetingsCreated: 0, meetingsUpdated: 0, meetingsDeleted: 0 },
+    userType: 'developer',
+    workspaceId: 'ws-1',
+    ...overrides,
+  };
+}
+
+describe('Agent Tool Execution', () => {
+  let agent: AnthropicAgent;
+
+  beforeEach(() => {
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    agent = new AnthropicAgent();
+    jest.clearAllMocks();
+  });
+
+  // Access private executeTool via prototype
+  function executeTool(name: string, input: Record<string, any>, context: AgentContext): Promise<any> {
+    return (agent as any).executeTool(name, input, context);
+  }
+
+  describe('create_focus_time', () => {
+    test('creates focus time event', async () => {
+      const ctx = makeContext();
+      const result = await executeTool('create_focus_time', { duration: 120 }, ctx);
+
+      expect(result.success).toBe(true);
+      expect(result.title).toBe('Focus Time');
+      expect(result.duration).toBe(120);
+      expect(result.undoAvailable).toBe(true);
+
+      // Verify calendar API was called
+      const calendar = ctx.providers.get('google')!.calendar!;
+      expect(calendar.createEvent).toHaveBeenCalledTimes(1);
+      const createCall = (calendar.createEvent as jest.Mock).mock.calls[0][1];
+      expect(createCall.body).toContain('[Caleo Focus]');
+      expect(createCall.isOnlineMeeting).toBe(false);
+    });
+
+    test('uses custom title when provided', async () => {
+      const ctx = makeContext();
+      const result = await executeTool('create_focus_time', { duration: 60, title: 'Deep Work' }, ctx);
+
+      expect(result.success).toBe(true);
+      expect(result.title).toBe('Deep Work');
+    });
+
+    test('fails when no calendar provider', async () => {
+      const ctx = makeContext({ providers: new Map() });
+      const result = await executeTool('create_focus_time', { duration: 60 }, ctx);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('No calendar provider');
+    });
+
+    test('fails when no free slot available', async () => {
+      const ctx = makeContext();
+      const calendar = ctx.providers.get('google')!.calendar!;
+      (calendar.findFreeTime as jest.Mock).mockReturnValue([]);
+
+      const result = await executeTool('create_focus_time', { duration: 120 }, ctx);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('No 120-minute free slot');
+    });
+
+    test('includes goal progress when user has a focus goal', async () => {
+      const ctx = makeContext();
+      // Mock getEvents to return a focus time block
+      const calendar = ctx.providers.get('google')!.calendar!;
+      (calendar.getEvents as jest.Mock).mockResolvedValue([{
+        id: 'focus-1',
+        subject: 'Focus Time',
+        start: { dateTime: '2026-03-02T09:00:00Z' },
+        end: { dateTime: '2026-03-02T11:00:00Z' },
+        body: { content: '[Caleo Focus]' },
+      }]);
+
+      const result = await executeTool('create_focus_time', { duration: 60 }, ctx);
+      expect(result.goalProgress).toContain('/6');
+    });
+
+    test('logs to audit log', async () => {
+      const ctx = makeContext();
+      await executeTool('create_focus_time', { duration: 60 }, ctx);
+
+      // Wait for async audit log
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(repository.logAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'db-user-1',
+          action: 'create_focus_time',
+        })
+      );
+    });
+  });
+
+  describe('get_focus_time_stats', () => {
+    test('returns zero when no focus blocks exist', async () => {
+      const ctx = makeContext();
+      const result = await executeTool('get_focus_time_stats', {}, ctx);
+      expect(result.totalHoursBlocked).toBe(0);
+      expect(result.blocksCount).toBe(0);
+      expect(result.goalHours).toBe(6);
+    });
+
+    test('counts focus time blocks by tag', async () => {
+      const ctx = makeContext();
+      const calendar = ctx.providers.get('google')!.calendar!;
+      (calendar.getEvents as jest.Mock).mockResolvedValue([
+        {
+          id: 'f1', subject: 'Focus Time',
+          start: { dateTime: '2026-03-02T09:00:00Z' },
+          end: { dateTime: '2026-03-02T11:00:00Z' },
+          body: { content: '[Caleo Focus]' },
+        },
+        {
+          id: 'f2', subject: 'Deep Work',
+          start: { dateTime: '2026-03-03T14:00:00Z' },
+          end: { dateTime: '2026-03-03T16:00:00Z' },
+          body: { content: 'Regular meeting, not focus time' },
+        },
+        {
+          id: 'f3', subject: 'focus time',
+          start: { dateTime: '2026-03-04T09:00:00Z' },
+          end: { dateTime: '2026-03-04T10:00:00Z' },
+          body: { content: '' },
+        },
+      ]);
+
+      const result = await executeTool('get_focus_time_stats', {}, ctx);
+      // f1 matches "[Caleo Focus]", f3 matches "focus time" in subject
+      expect(result.blocksCount).toBe(2);
+      expect(result.totalHoursBlocked).toBe(3); // 2h + 1h
+    });
+  });
+
+  describe('undo_last_change', () => {
+    test('undoes a create by deleting the event', async () => {
+      const ctx = makeContext();
+
+      // First create something
+      await executeTool('create_meeting', {
+        subject: 'Test Meeting',
+        startTime: '2026-03-02T09:00:00',
+        endTime: '2026-03-02T10:00:00',
+      }, ctx);
+
+      // Now undo
+      const result = await executeTool('undo_last_change', {}, ctx);
+      expect(result.success).toBe(true);
+      expect(result.undoneAction).toBe('create');
+
+      const calendar = ctx.providers.get('google')!.calendar!;
+      expect(calendar.deleteEvent).toHaveBeenCalledWith('test-token', 'new-evt-123');
+    });
+
+    test('undoes an update by reverting to previous state', async () => {
+      const ctx = makeContext();
+      const calendar = ctx.providers.get('google')!.calendar!;
+
+      // Mock getEvents to return the event being updated
+      (calendar.getEvents as jest.Mock).mockResolvedValue([{
+        id: 'evt-to-update',
+        subject: 'Original Title',
+        start: { dateTime: '2026-03-02T09:00:00Z' },
+        end: { dateTime: '2026-03-02T10:00:00Z' },
+      }]);
+
+      // Update the meeting
+      await executeTool('update_meeting', {
+        meetingId: 'evt-to-update',
+        subject: 'New Title',
+      }, ctx);
+
+      // Undo
+      const result = await executeTool('undo_last_change', {}, ctx);
+      expect(result.success).toBe(true);
+      expect(result.undoneAction).toBe('update');
+    });
+
+    test('undoes a delete by recreating the event', async () => {
+      const ctx = makeContext();
+      const calendar = ctx.providers.get('google')!.calendar!;
+
+      // Mock getEvents to return the event being deleted
+      (calendar.getEvents as jest.Mock).mockResolvedValue([{
+        id: 'evt-to-delete',
+        subject: 'Deleted Meeting',
+        start: { dateTime: '2026-03-02T09:00:00Z' },
+        end: { dateTime: '2026-03-02T10:00:00Z' },
+        attendees: [{ emailAddress: { address: 'alice@test.com' } }],
+      }]);
+
+      // Delete the meeting
+      await executeTool('delete_meeting', { meetingId: 'evt-to-delete' }, ctx);
+
+      // Undo
+      const result = await executeTool('undo_last_change', {}, ctx);
+      expect(result.success).toBe(true);
+      expect(result.undoneAction).toBe('delete');
+      expect(calendar.createEvent).toHaveBeenCalled();
+    });
+
+    test('returns error when no undo available', async () => {
+      // Use a fresh context with a unique key that hasn't had any actions
+      const ctx = makeContext({
+        dbUserId: 'unique-user-no-history',
+        slackChannelId: 'unique-channel',
+      });
+      const result = await executeTool('undo_last_change', {}, ctx);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('No recent changes');
+    });
+
+    test('undo logs to audit log', async () => {
+      const ctx = makeContext();
+
+      // Create then undo
+      await executeTool('create_meeting', {
+        subject: 'Test', startTime: '2026-03-02T09:00:00', endTime: '2026-03-02T10:00:00',
+      }, ctx);
+
+      jest.clearAllMocks(); // Reset call counts
+      await executeTool('undo_last_change', {}, ctx);
+
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(repository.logAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'undo_create',
+        })
+      );
+    });
+
+    test('undo clears the undo state (no double undo)', async () => {
+      const ctx = makeContext();
+
+      await executeTool('create_meeting', {
+        subject: 'Test', startTime: '2026-03-02T09:00:00', endTime: '2026-03-02T10:00:00',
+      }, ctx);
+
+      await executeTool('undo_last_change', {}, ctx);
+      const secondUndo = await executeTool('undo_last_change', {}, ctx);
+      expect(secondUndo.success).toBe(false);
+      expect(secondUndo.error).toContain('No recent changes');
+    });
+  });
+
+  describe('create_meeting with audit log and undo', () => {
+    test('stores undo state after create', async () => {
+      const ctx = makeContext();
+      const result = await executeTool('create_meeting', {
+        subject: 'Team Sync',
+        startTime: '2026-03-02T09:00:00',
+        endTime: '2026-03-02T10:00:00',
+        attendees: ['alice@test.com'],
+      }, ctx);
+
+      expect(result.success).toBe(true);
+      expect(result.undoAvailable).toBe(true);
+      expect(ctx.actionsPerformed.meetingsCreated).toBe(1);
+    });
+
+    test('logs create to audit log', async () => {
+      const ctx = makeContext();
+      await executeTool('create_meeting', {
+        subject: 'Test',
+        startTime: '2026-03-02T09:00:00',
+        endTime: '2026-03-02T10:00:00',
+      }, ctx);
+
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(repository.logAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'db-user-1',
+          action: 'create_meeting',
+          provider: 'google',
+        })
+      );
+    });
+
+    test('passes recurrence to calendar provider', async () => {
+      const ctx = makeContext();
+      await executeTool('create_meeting', {
+        subject: 'Weekly Sync',
+        startTime: '2026-03-02T09:00:00',
+        endTime: '2026-03-02T10:00:00',
+        recurrence: 'RRULE:FREQ=WEEKLY;COUNT=10',
+      }, ctx);
+
+      const calendar = ctx.providers.get('google')!.calendar!;
+      const createCall = (calendar.createEvent as jest.Mock).mock.calls[0][1];
+      expect(createCall.recurrence).toBe('RRULE:FREQ=WEEKLY;COUNT=10');
+    });
+
+    test('strips Z suffix from times', async () => {
+      const ctx = makeContext();
+      await executeTool('create_meeting', {
+        subject: 'Test',
+        startTime: '2026-03-02T09:00:00Z',
+        endTime: '2026-03-02T10:00:00Z',
+      }, ctx);
+
+      const calendar = ctx.providers.get('google')!.calendar!;
+      const createCall = (calendar.createEvent as jest.Mock).mock.calls[0][1];
+      expect(createCall.start).toBe('2026-03-02T09:00:00');
+      expect(createCall.end).toBe('2026-03-02T10:00:00');
+    });
+
+    test('strips timezone offset from times', async () => {
+      const ctx = makeContext();
+      await executeTool('create_meeting', {
+        subject: 'Test',
+        startTime: '2026-03-02T09:00:00-06:00',
+        endTime: '2026-03-02T10:00:00-06:00',
+      }, ctx);
+
+      const calendar = ctx.providers.get('google')!.calendar!;
+      const createCall = (calendar.createEvent as jest.Mock).mock.calls[0][1];
+      expect(createCall.start).toBe('2026-03-02T09:00:00');
+    });
+  });
+
+  describe('delete_meeting with audit log', () => {
+    test('logs delete to audit log', async () => {
+      const ctx = makeContext();
+      await executeTool('delete_meeting', { meetingId: 'evt-1' }, ctx);
+
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(repository.logAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'delete_meeting',
+          eventId: 'evt-1',
+        })
+      );
+    });
+
+    test('increments deletesPerformed counter', async () => {
+      const ctx = makeContext();
+      await executeTool('delete_meeting', { meetingId: 'evt-1' }, ctx);
+      expect(ctx.actionsPerformed.meetingsDeleted).toBe(1);
+    });
+  });
+
+  describe('impact scoring (find_free_time)', () => {
+    test('returns scored slots', async () => {
+      const ctx = makeContext();
+      const result = await executeTool('find_free_time', {
+        duration: 60,
+        startDate: '2026-03-02T09:00:00Z',
+        endDate: '2026-03-02T17:00:00Z',
+      }, ctx);
+
+      expect(result.freeSlots).toBeDefined();
+      expect(result.freeSlots.length).toBeGreaterThan(0);
+      // Each slot should have score and reason
+      for (const slot of result.freeSlots) {
+        expect(typeof slot.score).toBe('number');
+        expect(typeof slot.reason).toBe('string');
+        expect(slot.score).toBeGreaterThanOrEqual(0);
+      }
+    });
+
+    test('penalizes no-meeting day slots', async () => {
+      const ctx = makeContext();
+      // Configure Saturday (6) as no-meeting day (already set in mock)
+      const calendar = ctx.providers.get('google')!.calendar!;
+      (calendar.findFreeTime as jest.Mock).mockReturnValue([
+        // Return a Saturday slot
+        { start: '2026-02-28T09:00:00Z', end: '2026-02-28T10:00:00Z' }, // Saturday
+      ]);
+
+      const result = await executeTool('find_free_time', {
+        duration: 60,
+        startDate: '2026-02-28T00:00:00Z',
+        endDate: '2026-03-01T00:00:00Z',
+      }, ctx);
+
+      if (result.freeSlots.length > 0) {
+        const saturdaySlot = result.freeSlots[0];
+        expect(saturdaySlot.reason).toContain('no-meeting day');
+        expect(saturdaySlot.score).toBeLessThan(10);
+      }
+    });
+  });
+
+  describe('error handling', () => {
+    test('unknown tool returns error', async () => {
+      const ctx = makeContext();
+      const result = await executeTool('nonexistent_tool', {}, ctx);
+      expect(result.error).toContain('Unknown tool');
+    });
+
+    test('get_preferences without dbUserId returns error', async () => {
+      const ctx = makeContext({ dbUserId: undefined });
+      const result = await executeTool('get_preferences', {}, ctx);
+      expect(result.error).toContain('User not found');
+    });
+
+    test('create_meeting without provider returns helpful error', async () => {
+      const ctx = makeContext({ providers: new Map() });
+      const result = await executeTool('create_meeting', {
+        subject: 'Test', startTime: '2026-03-02T09:00:00', endTime: '2026-03-02T10:00:00',
+      }, ctx);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('/caleo-auth');
+    });
+
+    test('handles calendar API errors gracefully', async () => {
+      const ctx = makeContext();
+      const calendar = ctx.providers.get('google')!.calendar!;
+      (calendar.createEvent as jest.Mock).mockRejectedValue(new Error('API error: 500'));
+
+      const result = await executeTool('create_meeting', {
+        subject: 'Test', startTime: '2026-03-02T09:00:00', endTime: '2026-03-02T10:00:00',
+      }, ctx);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('API error');
+    });
+
+    test('handles 401 errors with re-auth suggestion', async () => {
+      const ctx = makeContext();
+      const calendar = ctx.providers.get('google')!.calendar!;
+      const authErr: any = new Error('Unauthorized');
+      authErr.status = 401;
+      (calendar.getEvents as jest.Mock).mockRejectedValue(authErr);
+
+      const result = await executeTool('get_today_events', {}, ctx);
+      expect(result.error).toContain('/caleo-auth');
+    });
+  });
+
+  describe('meeting limit enforcement', () => {
+    test('blocks create when free plan limit reached', async () => {
+      const ctx = makeContext({ userType: 'member' });
+      (repository.getWorkspacePlan as jest.Mock).mockResolvedValue('free');
+      (repository.getMonthlyUsage as jest.Mock).mockResolvedValue({ meetingsCreated: 10 });
+
+      const result = await executeTool('create_meeting', {
+        subject: 'Over Limit', startTime: '2026-03-02T09:00:00', endTime: '2026-03-02T10:00:00',
+      }, ctx);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('free plan limit');
+    });
+
+    test('allows create for developer users regardless of limits', async () => {
+      const ctx = makeContext({ userType: 'developer' });
+      const result = await executeTool('create_meeting', {
+        subject: 'Dev Meeting', startTime: '2026-03-02T09:00:00', endTime: '2026-03-02T10:00:00',
+      }, ctx);
+      expect(result.success).toBe(true);
+    });
+  });
+});

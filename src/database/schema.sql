@@ -121,6 +121,36 @@ CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation
 CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_stripe_events_stripe_id ON stripe_events(stripe_event_id);
 
+-- User settings (ambient features: status sync, daily briefing, focus time, etc.)
+CREATE TABLE IF NOT EXISTS user_settings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id),
+  status_sync_enabled BOOLEAN DEFAULT false,
+  show_event_titles BOOLEAN DEFAULT false,
+  dnd_during_focus BOOLEAN DEFAULT false,
+  daily_briefing_enabled BOOLEAN DEFAULT true,
+  daily_briefing_time VARCHAR(5) DEFAULT '08:30',
+  focus_time_goal_hours INTEGER DEFAULT 0,
+  no_meeting_days INTEGER[] DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id)
+);
+
+-- Audit log for calendar modifications
+CREATE TABLE IF NOT EXISTS audit_log (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id),
+  action VARCHAR(50) NOT NULL,
+  event_id VARCHAR(500),
+  provider VARCHAR(20),
+  details JSONB,
+  slack_channel VARCHAR(50),
+  slack_thread_ts VARCHAR(50),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id, created_at DESC);
+
 -- Cross-workspace email lookup (case-insensitive) for cross-org meeting support
 -- In production, use CREATE INDEX CONCURRENTLY to avoid table locks
 CREATE INDEX IF NOT EXISTS idx_users_email_lower ON users(LOWER(email));

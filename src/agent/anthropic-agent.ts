@@ -114,7 +114,8 @@ const toolDefinitions: Anthropic.Tool[] = [
         location: { type: 'string', description: 'Meeting location (optional)' },
         body: { type: 'string', description: 'Meeting description (optional)' },
         isOnlineMeeting: { type: 'boolean', description: 'Create as online meeting' },
-        provider: { type: 'string', description: 'Calendar provider', enum: ['microsoft', 'google'] }
+        provider: { type: 'string', description: 'Calendar provider', enum: ['microsoft', 'google'] },
+        recurrence: { type: 'string', description: 'Recurrence rule in RRULE format (e.g., "RRULE:FREQ=WEEKLY;COUNT=10", "RRULE:FREQ=DAILY", "RRULE:FREQ=MONTHLY;INTERVAL=1"). Omit for one-time meetings.' }
       },
       required: ['subject', 'startTime', 'endTime']
     }
@@ -269,8 +270,60 @@ const toolDefinitions: Anthropic.Tool[] = [
       },
       required: []
     }
+  },
+  {
+    name: 'create_focus_time',
+    description: 'Create a focus time block on the calendar. Finds the best available slot and creates a calendar event tagged [Caleo Focus].',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        duration: { type: 'number', description: 'Duration in minutes (e.g. 60, 90, 120)' },
+        preferredDate: { type: 'string', description: 'Preferred date in ISO format (optional, defaults to today or next workday)' },
+        title: { type: 'string', description: 'Custom title (optional, defaults to "Focus Time")' },
+        provider: { type: 'string', description: 'Calendar provider', enum: ['microsoft', 'google'] }
+      },
+      required: ['duration']
+    }
+  },
+  {
+    name: 'get_focus_time_stats',
+    description: 'Get this week\'s focus time statistics: hours blocked, hours preserved, and progress toward weekly goal.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        provider: { type: 'string', description: 'Calendar provider', enum: ['microsoft', 'google'] }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'undo_last_change',
+    description: 'Undo the last calendar change (create, update, or delete). Only available within 10 minutes of the change.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {},
+      required: []
+    }
   }
 ];
+
+// In-memory undo state: keyed by "userId:channelId"
+interface UndoState {
+  action: 'create' | 'update' | 'delete';
+  eventId: string;
+  provider: string;
+  previousState?: any; // For update: the old event data. For delete: the full event params.
+  createdEvent?: any;  // For create: the event that was created (so we can delete it).
+  timestamp: number;
+}
+const undoStore = new Map<string, UndoState>();
+// Clean up expired entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, state] of undoStore) {
+    if (now - state.timestamp > 10 * 60_000) undoStore.delete(key);
+  }
+}, 5 * 60_000).unref();
 
 export class AnthropicAgent {
   private client: Anthropic;
@@ -612,8 +665,28 @@ export class AnthropicAgent {
             body: eventBody,
             isOnlineMeeting: input.isOnlineMeeting ?? true,
             timezone: tz,
+            recurrence: input.recurrence,
           });
           context.actionsPerformed.meetingsCreated++;
+
+          // Store undo state
+          const undoKey = `${context.dbUserId || context.userContext.userId}:${context.slackChannelId || 'default'}`;
+          undoStore.set(undoKey, {
+            action: 'create', eventId: event.id, provider: provider.providerType,
+            createdEvent: { subject: input.subject, start: startLocal, end: endLocal, attendees },
+            timestamp: Date.now(),
+          });
+
+          // Audit log
+          if (context.dbUserId) {
+            repository.logAction({
+              userId: context.dbUserId, action: 'create_meeting', eventId: event.id,
+              provider: provider.providerType,
+              details: { subject: input.subject, start: startLocal, end: endLocal, attendees, recurrence: input.recurrence },
+              slackChannel: context.slackChannelId, slackThreadTs: context.slackThreadTs,
+            }).catch(err => console.error('[AuditLog] create_meeting error:', err?.message));
+          }
+
           return {
             success: true,
             meetingId: event.id,
@@ -621,6 +694,8 @@ export class AnthropicAgent {
             onlineMeetingUrl: event.onlineMeetingUrl,
             attendeesInvited: attendees.length,
             attendeeEmails: attendees,
+            isRecurring: !!input.recurrence,
+            undoAvailable: true,
           };
         } catch (error: any) {
           return { success: false, error: this.formatApiError(error, provider) };
@@ -641,9 +716,35 @@ export class AnthropicAgent {
           if (input.attendees) updates.attendees = input.attendees;
           if (input.location) updates.location = input.location;
           if (input.body) updates.body = input.body;
+          // Fetch current state for undo before updating
+          let previousState: any = null;
+          try {
+            const currentEvents = await provider.calendar.getEvents(provider.accessToken, new Date(Date.now() - 365 * 24 * 60 * 60_000), new Date(Date.now() + 365 * 24 * 60 * 60_000));
+            const current = currentEvents.find(e => e.id === input.meetingId);
+            if (current) previousState = { subject: current.subject, start: current.start.dateTime, end: current.end.dateTime };
+          } catch {}
+
           await provider.calendar.updateEvent(provider.accessToken, input.meetingId, updates);
           context.actionsPerformed.meetingsUpdated++;
-          return { success: true, meetingId: input.meetingId, attendeesUpdated: input.attendees?.length || 0 };
+
+          // Store undo state
+          const updateUndoKey = `${context.dbUserId || context.userContext.userId}:${context.slackChannelId || 'default'}`;
+          undoStore.set(updateUndoKey, {
+            action: 'update', eventId: input.meetingId, provider: provider.providerType,
+            previousState, timestamp: Date.now(),
+          });
+
+          // Audit log
+          if (context.dbUserId) {
+            repository.logAction({
+              userId: context.dbUserId, action: 'update_meeting', eventId: input.meetingId,
+              provider: provider.providerType,
+              details: { changes: updates },
+              slackChannel: context.slackChannelId, slackThreadTs: context.slackThreadTs,
+            }).catch(err => console.error('[AuditLog] update_meeting error:', err?.message));
+          }
+
+          return { success: true, meetingId: input.meetingId, attendeesUpdated: input.attendees?.length || 0, undoAvailable: true };
         } catch (error: any) {
           return { success: false, error: this.formatApiError(error, provider) };
         }
@@ -655,9 +756,41 @@ export class AnthropicAgent {
           return { success: false, error: this.getProviderError(context, input.provider) };
         }
         try {
+          // Capture event details before deleting for undo
+          let deletedEventDetails: any = null;
+          try {
+            const allEvents = await provider.calendar.getEvents(provider.accessToken, new Date(Date.now() - 30 * 24 * 60 * 60_000), new Date(Date.now() + 365 * 24 * 60 * 60_000));
+            const target = allEvents.find(e => e.id === input.meetingId);
+            if (target) {
+              deletedEventDetails = {
+                subject: target.subject, start: target.start.dateTime, end: target.end.dateTime,
+                timezone: target.start.timeZone,
+                attendees: target.attendees?.map(a => a.emailAddress.address),
+              };
+            }
+          } catch {}
+
           await provider.calendar.deleteEvent(provider.accessToken, input.meetingId);
           context.actionsPerformed.meetingsDeleted++;
-          return { success: true, meetingId: input.meetingId };
+
+          // Store undo state
+          const deleteUndoKey = `${context.dbUserId || context.userContext.userId}:${context.slackChannelId || 'default'}`;
+          undoStore.set(deleteUndoKey, {
+            action: 'delete', eventId: input.meetingId, provider: provider.providerType,
+            previousState: deletedEventDetails, timestamp: Date.now(),
+          });
+
+          // Audit log
+          if (context.dbUserId) {
+            repository.logAction({
+              userId: context.dbUserId, action: 'delete_meeting', eventId: input.meetingId,
+              provider: provider.providerType,
+              details: deletedEventDetails,
+              slackChannel: context.slackChannelId, slackThreadTs: context.slackThreadTs,
+            }).catch(err => console.error('[AuditLog] delete_meeting error:', err?.message));
+          }
+
+          return { success: true, meetingId: input.meetingId, undoAvailable: true };
         } catch (error: any) {
           return { success: false, error: this.formatApiError(error, provider) };
         }
@@ -719,7 +852,13 @@ export class AnthropicAgent {
               end: input.workingHoursEnd || '17:00',
             } : undefined,
           });
-          return { freeSlots: slots };
+
+          // Add impact scores
+          const prefs = context.dbUserId ? await repository.getPreferences(context.dbUserId) : null;
+          const settings = context.dbUserId ? await repository.getUserSettings(context.dbUserId) : null;
+          const scoredSlots = slots.map(slot => this.scoreSlot(slot, events, prefs, settings, tz));
+
+          return { freeSlots: scoredSlots };
         } catch (error: any) {
           return { freeSlots: [], error: this.formatApiError(error, provider) };
         }
@@ -1000,6 +1139,198 @@ export class AnthropicAgent {
         }
       }
 
+      case 'create_focus_time': {
+        const provider = this.getProvider(context, input.provider);
+        if (!provider?.calendar || !provider.accessToken) {
+          return { success: false, error: this.getProviderError(context, input.provider) };
+        }
+        try {
+          const duration = input.duration || 60;
+          const title = input.title || 'Focus Time';
+          const prefs = context.dbUserId ? await repository.getPreferences(context.dbUserId) : null;
+          const workStart = prefs?.work_hours_start || '09:00';
+          const workEnd = prefs?.work_hours_end || '17:00';
+
+          // Determine search date range
+          let searchStart: Date;
+          let searchEnd: Date;
+          if (input.preferredDate) {
+            searchStart = new Date(input.preferredDate);
+            searchEnd = new Date(searchStart.getTime() + 24 * 60 * 60_000);
+          } else {
+            const { start } = this.getTimezoneDay(tz);
+            searchStart = new Date(Math.max(start.getTime(), Date.now()));
+            searchEnd = new Date(start.getTime() + 5 * 24 * 60 * 60_000); // Search up to 5 days out
+          }
+
+          // Find free slots
+          const events = await provider.calendar.getEvents(provider.accessToken, searchStart, searchEnd);
+          const slots = provider.calendar.findFreeTime(provider.accessToken, events, {
+            duration,
+            startDate: searchStart.toISOString(),
+            endDate: searchEnd.toISOString(),
+            workingHours: { start: workStart, end: workEnd },
+          });
+
+          // Prefer longer unbroken blocks (sort by gap size descending)
+          // Pick the slot that falls in the morning if possible
+          let bestSlot = slots[0];
+          for (const slot of slots) {
+            const hour = new Date(slot.start).getHours();
+            if (hour < 11) { bestSlot = slot; break; }
+          }
+
+          if (!bestSlot) {
+            return { success: false, error: `No ${duration}-minute free slot found in the next 5 workdays. Try a shorter duration or check your calendar.` };
+          }
+
+          const startLocal = bestSlot.start.replace(/Z$/, '').replace(/[+-]\d{2}:?\d{2}$/, '');
+          const endLocal = bestSlot.end.replace(/Z$/, '').replace(/[+-]\d{2}:?\d{2}$/, '');
+
+          const event = await provider.calendar.createEvent(provider.accessToken, {
+            subject: title,
+            start: startLocal,
+            end: endLocal,
+            body: '[Caleo Focus] This time is blocked for focused work.',
+            isOnlineMeeting: false,
+            timezone: tz,
+          });
+
+          // Audit log
+          if (context.dbUserId) {
+            repository.logAction({
+              userId: context.dbUserId, action: 'create_focus_time', eventId: event.id,
+              provider: provider.providerType,
+              details: { title, duration, start: startLocal, end: endLocal },
+              slackChannel: context.slackChannelId, slackThreadTs: context.slackThreadTs,
+            }).catch(err => console.error('[AuditLog] create_focus_time error:', err?.message));
+          }
+
+          // Store undo state
+          const focusUndoKey = `${context.dbUserId || context.userContext.userId}:${context.slackChannelId || 'default'}`;
+          undoStore.set(focusUndoKey, {
+            action: 'create', eventId: event.id, provider: provider.providerType,
+            createdEvent: { subject: title, start: startLocal, end: endLocal },
+            timestamp: Date.now(),
+          });
+
+          // Check weekly goal progress
+          let goalProgress = '';
+          if (context.dbUserId) {
+            const settings = await repository.getUserSettings(context.dbUserId);
+            if (settings.focus_time_goal_hours > 0) {
+              const stats = await this.getFocusTimeStats(provider, tz);
+              goalProgress = ` You have ${stats.totalHours.toFixed(1)}/${settings.focus_time_goal_hours} focus hours this week.`;
+            }
+          }
+
+          return {
+            success: true,
+            meetingId: event.id,
+            title,
+            start: new Date(bestSlot.start).toLocaleString('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }),
+            end: new Date(bestSlot.end).toLocaleTimeString('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' }),
+            duration,
+            goalProgress,
+            undoAvailable: true,
+          };
+        } catch (error: any) {
+          return { success: false, error: this.formatApiError(error, provider) };
+        }
+      }
+
+      case 'get_focus_time_stats': {
+        const provider = this.getProvider(context, input.provider);
+        if (!provider?.calendar || !provider.accessToken) {
+          return { error: this.getProviderError(context, input.provider) };
+        }
+        try {
+          const stats = await this.getFocusTimeStats(provider, tz);
+          let goalHours = 0;
+          if (context.dbUserId) {
+            const settings = await repository.getUserSettings(context.dbUserId);
+            goalHours = settings.focus_time_goal_hours || 0;
+          }
+          return {
+            totalHoursBlocked: stats.totalHours,
+            blocksCount: stats.blocksCount,
+            goalHours,
+            goalProgress: goalHours > 0 ? `${stats.totalHours.toFixed(1)}/${goalHours} hours` : 'No goal set',
+          };
+        } catch (error: any) {
+          return { error: this.formatApiError(error, provider) };
+        }
+      }
+
+      case 'undo_last_change': {
+        const undoKey = `${context.dbUserId || context.userContext.userId}:${context.slackChannelId || 'default'}`;
+        const state = undoStore.get(undoKey);
+
+        if (!state || Date.now() - state.timestamp > 10 * 60_000) {
+          return { success: false, error: 'No recent changes to undo, or the undo window (10 minutes) has expired.' };
+        }
+
+        const provider = this.getProvider(context, state.provider);
+        if (!provider?.calendar || !provider.accessToken) {
+          return { success: false, error: 'Calendar provider no longer available.' };
+        }
+
+        try {
+          let result: any;
+          switch (state.action) {
+            case 'create':
+              // Undo create = delete the event
+              await provider.calendar.deleteEvent(provider.accessToken, state.eventId);
+              result = { success: true, undoneAction: 'create', message: `Deleted the event "${state.createdEvent?.subject || 'Unknown'}"` };
+              break;
+            case 'update':
+              // Undo update = restore previous state
+              if (state.previousState) {
+                await provider.calendar.updateEvent(provider.accessToken, state.eventId, {
+                  subject: state.previousState.subject,
+                  start: state.previousState.start,
+                  end: state.previousState.end,
+                  timezone: tz,
+                });
+                result = { success: true, undoneAction: 'update', message: 'Reverted to previous version.' };
+              } else {
+                result = { success: false, error: 'Could not restore — previous state was not captured.' };
+              }
+              break;
+            case 'delete':
+              // Undo delete = recreate the event
+              if (state.previousState) {
+                const recreated = await provider.calendar.createEvent(provider.accessToken, {
+                  subject: state.previousState.subject,
+                  start: state.previousState.start,
+                  end: state.previousState.end,
+                  timezone: state.previousState.timezone || tz,
+                  attendees: state.previousState.attendees,
+                  isOnlineMeeting: true,
+                });
+                result = { success: true, undoneAction: 'delete', message: `Recreated "${state.previousState.subject}"`, meetingId: recreated.id };
+              } else {
+                result = { success: false, error: 'Could not recreate — event details were not captured.' };
+              }
+              break;
+          }
+
+          // Audit log the undo
+          if (context.dbUserId) {
+            repository.logAction({
+              userId: context.dbUserId, action: `undo_${state.action}`, eventId: state.eventId,
+              provider: state.provider, details: { originalAction: state.action },
+              slackChannel: context.slackChannelId, slackThreadTs: context.slackThreadTs,
+            }).catch(err => console.error('[AuditLog] undo error:', err?.message));
+          }
+
+          undoStore.delete(undoKey);
+          return result;
+        } catch (error: any) {
+          return { success: false, error: `Undo failed: ${error?.message || 'Unknown error'}` };
+        }
+      }
+
       default:
         return { error: `Unknown tool: ${name}` };
     }
@@ -1171,6 +1502,103 @@ export class AnthropicAgent {
     }
 
     return { results, ...(notes.length > 0 && { notes }) };
+  }
+
+  private scoreSlot(
+    slot: { start: string; end: string },
+    events: any[],
+    prefs: any,
+    settings: any,
+    tz: string
+  ): { start: string; end: string; score: number; reason: string } {
+    let score = 10;
+    const reasons: string[] = [];
+    const slotStart = new Date(slot.start).getTime();
+    const slotEnd = new Date(slot.end).getTime();
+    const slotHour = new Date(slot.start).getHours();
+    const slotDay = new Date(slot.start).getDay();
+
+    const bufferMs = ((prefs?.buffer_minutes || 0)) * 60_000;
+    const noMeetingDays: number[] = settings?.no_meeting_days || [];
+
+    // No-meeting day violation
+    if (noMeetingDays.includes(slotDay)) {
+      score -= 5;
+      reasons.push('Falls on a no-meeting day');
+    }
+
+    // Check for focus block fragmentation
+    const focusBlocks = events.filter(e => {
+      const desc = e.body?.content || e.subject || '';
+      return desc.includes('[Caleo Focus]') || desc.toLowerCase().includes('focus time');
+    });
+    for (const fb of focusBlocks) {
+      const fbStart = new Date(fb.start.dateTime).getTime();
+      const fbEnd = new Date(fb.end.dateTime).getTime();
+      if (fbStart < slotEnd && fbEnd > slotStart && (fbEnd - fbStart) >= 90 * 60_000) {
+        score -= 2;
+        reasons.push('Fragments a focus block');
+        break;
+      }
+    }
+
+    // Back-to-back penalty
+    for (const e of events) {
+      const eStart = new Date(e.start.dateTime).getTime();
+      const eEnd = new Date(e.end.dateTime).getTime();
+      if ((Math.abs(eEnd - slotStart) < (bufferMs || 5 * 60_000)) ||
+          (Math.abs(slotEnd - eStart) < (bufferMs || 5 * 60_000))) {
+        score -= 1;
+        const eventName = e.subject || 'another meeting';
+        reasons.push(`Back-to-back with ${eventName}`);
+        break;
+      }
+    }
+
+    // Morning preference for short meetings
+    const durationMin = (slotEnd - slotStart) / 60_000;
+    if (slotHour < 12 && durationMin <= 45) {
+      score += 0.5;
+    }
+
+    // Working hours alignment
+    const workStart = prefs?.work_hours_start || '09:00';
+    const workEnd = prefs?.work_hours_end || '17:00';
+    const [wsH] = workStart.split(':').map(Number);
+    const [weH] = workEnd.split(':').map(Number);
+    if (slotHour >= wsH && slotHour < weH) {
+      score += 1;
+    } else {
+      score -= 1;
+      reasons.push('Outside preferred work hours');
+    }
+
+    const reason = reasons.length > 0 ? reasons[0] : 'Good slot — no conflicts';
+    return { start: slot.start, end: slot.end, score: Math.max(0, Math.round(score * 10) / 10), reason };
+  }
+
+  private async getFocusTimeStats(provider: any, tz: string): Promise<{ totalHours: number; blocksCount: number }> {
+    // Get this week's events and count focus time blocks
+    const { start: todayStart } = this.getTimezoneDay(tz);
+    const dayOfWeek = todayStart.getDay();
+    const startOfWeek = new Date(todayStart.getTime() - dayOfWeek * 24 * 60 * 60_000);
+    const endOfWeek = new Date(startOfWeek.getTime() + 7 * 24 * 60 * 60_000);
+
+    const events = await provider.calendar.getEvents(provider.accessToken, startOfWeek, endOfWeek);
+    let totalMinutes = 0;
+    let blocksCount = 0;
+
+    for (const e of events) {
+      const desc = e.body?.content || '';
+      const subject = e.subject || '';
+      if (desc.includes('[Caleo Focus]') || subject.toLowerCase().includes('focus time')) {
+        const duration = (new Date(e.end.dateTime).getTime() - new Date(e.start.dateTime).getTime()) / 60_000;
+        totalMinutes += duration;
+        blocksCount++;
+      }
+    }
+
+    return { totalHours: totalMinutes / 60, blocksCount };
   }
 
   private formatEvent(event: any, timezone: string): any {

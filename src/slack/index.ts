@@ -93,6 +93,10 @@ const encryption = new EncryptionService();
 import { CrossOrgService } from '../calendar/cross-org';
 const crossOrgService = new CrossOrgService({ googleOAuth, microsoftOAuth, repository });
 
+// Ambient services
+import { StatusSyncService } from './status-sync';
+import { DailyBriefingService } from './daily-briefing';
+
 function getRedirectUri(): string {
   if (process.env.OAUTH_REDIRECT_URI) return process.env.OAUTH_REDIRECT_URI;
   const base = process.env.NGROK_URL || `http://localhost:${process.env.SLACK_PORT || 3000}`;
@@ -966,12 +970,313 @@ app.command('/caleo-billing', async ({ command, ack, respond, client, body }: an
   }
 });
 
+// /caleo-settings command
+app.command('/caleo-settings', async ({ command, ack, client, body }: any) => {
+  await ack();
+  try {
+    const { dbUserId } = await ensureUser(client, command.user_id, body?.team_id);
+    const settings = await repository.getUserSettings(dbUserId);
+    const prefs = await repository.getPreferences(dbUserId);
+
+    const durationOptions = [15, 30, 45, 60].map(d => ({
+      text: { type: 'plain_text' as const, text: `${d} minutes` },
+      value: String(d),
+    }));
+    const bufferOptions = [0, 5, 10, 15].map(b => ({
+      text: { type: 'plain_text' as const, text: b === 0 ? 'None' : `${b} minutes` },
+      value: String(b),
+    }));
+    const timeOptions = [];
+    for (let h = 6; h <= 22; h++) {
+      for (const m of ['00', '30']) {
+        const t = `${String(h).padStart(2, '0')}:${m}`;
+        const label = new Date(`2026-01-01T${t}:00`).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        timeOptions.push({ text: { type: 'plain_text' as const, text: label }, value: t });
+      }
+    }
+    const focusOptions = [0, 2, 4, 6, 8].map(h => ({
+      text: { type: 'plain_text' as const, text: h === 0 ? 'Disabled' : `${h} hours/week` },
+      value: String(h),
+    }));
+    const dayOptions = [
+      { text: { type: 'plain_text' as const, text: 'Sunday' }, value: '0' },
+      { text: { type: 'plain_text' as const, text: 'Monday' }, value: '1' },
+      { text: { type: 'plain_text' as const, text: 'Tuesday' }, value: '2' },
+      { text: { type: 'plain_text' as const, text: 'Wednesday' }, value: '3' },
+      { text: { type: 'plain_text' as const, text: 'Thursday' }, value: '4' },
+      { text: { type: 'plain_text' as const, text: 'Friday' }, value: '5' },
+      { text: { type: 'plain_text' as const, text: 'Saturday' }, value: '6' },
+    ];
+    const providerOptions = [
+      { text: { type: 'plain_text' as const, text: 'Auto (first connected)' }, value: 'auto' },
+      { text: { type: 'plain_text' as const, text: 'Google Calendar' }, value: 'google' },
+      { text: { type: 'plain_text' as const, text: 'Microsoft Outlook' }, value: 'microsoft' },
+    ];
+
+    const noMeetingDays = (settings.no_meeting_days || []).map(String);
+
+    await client.views.open({
+      trigger_id: command.trigger_id,
+      view: {
+        type: 'modal',
+        callback_id: 'caleo_settings_modal',
+        private_metadata: dbUserId,
+        title: { type: 'plain_text', text: 'Caleo Settings' },
+        submit: { type: 'plain_text', text: 'Save' },
+        blocks: [
+          { type: 'header', text: { type: 'plain_text', text: 'Work Hours' } },
+          {
+            type: 'section', block_id: 'work_hours_start',
+            text: { type: 'mrkdwn', text: '*Start time*' },
+            accessory: {
+              type: 'static_select', action_id: 'work_hours_start_select',
+              initial_option: timeOptions.find(o => o.value === (prefs.work_hours_start || '09:00')) || timeOptions[6],
+              options: timeOptions,
+            },
+          },
+          {
+            type: 'section', block_id: 'work_hours_end',
+            text: { type: 'mrkdwn', text: '*End time*' },
+            accessory: {
+              type: 'static_select', action_id: 'work_hours_end_select',
+              initial_option: timeOptions.find(o => o.value === (prefs.work_hours_end || '17:00')) || timeOptions[22],
+              options: timeOptions,
+            },
+          },
+          { type: 'header', text: { type: 'plain_text', text: 'Meeting Defaults' } },
+          {
+            type: 'section', block_id: 'default_duration',
+            text: { type: 'mrkdwn', text: '*Default duration*' },
+            accessory: {
+              type: 'static_select', action_id: 'default_duration_select',
+              initial_option: durationOptions.find(o => o.value === String(prefs.default_duration_minutes || 30)) || durationOptions[1],
+              options: durationOptions,
+            },
+          },
+          {
+            type: 'section', block_id: 'buffer_minutes',
+            text: { type: 'mrkdwn', text: '*Buffer between meetings*' },
+            accessory: {
+              type: 'static_select', action_id: 'buffer_minutes_select',
+              initial_option: bufferOptions.find(o => o.value === String(prefs.buffer_minutes || 0)) || bufferOptions[0],
+              options: bufferOptions,
+            },
+          },
+          { type: 'header', text: { type: 'plain_text', text: 'Slack Status Sync' } },
+          {
+            type: 'actions', block_id: 'status_sync',
+            elements: [{
+              type: 'checkboxes', action_id: 'status_sync_checks',
+              options: [
+                { text: { type: 'mrkdwn', text: '*Sync calendar to Slack status*' }, description: { type: 'plain_text', text: 'Shows "In a meeting" when you have events' }, value: 'status_sync_enabled' },
+                { text: { type: 'mrkdwn', text: '*Show event titles in status*' }, description: { type: 'plain_text', text: 'Off = generic "In a meeting" (privacy-first)' }, value: 'show_event_titles' },
+              ],
+              ...(settings.status_sync_enabled || settings.show_event_titles ? {
+                initial_options: [
+                  ...(settings.status_sync_enabled ? [{ text: { type: 'mrkdwn', text: '*Sync calendar to Slack status*' }, description: { type: 'plain_text', text: 'Shows "In a meeting" when you have events' }, value: 'status_sync_enabled' }] : []),
+                  ...(settings.show_event_titles ? [{ text: { type: 'mrkdwn', text: '*Show event titles in status*' }, description: { type: 'plain_text', text: 'Off = generic "In a meeting" (privacy-first)' }, value: 'show_event_titles' }] : []),
+                ],
+              } : {}),
+            }],
+          },
+          { type: 'header', text: { type: 'plain_text', text: 'Daily Briefing' } },
+          {
+            type: 'actions', block_id: 'daily_briefing',
+            elements: [{
+              type: 'checkboxes', action_id: 'daily_briefing_check',
+              options: [
+                { text: { type: 'mrkdwn', text: '*Send daily schedule briefing*' }, value: 'daily_briefing_enabled' },
+              ],
+              ...(settings.daily_briefing_enabled ? {
+                initial_options: [
+                  { text: { type: 'mrkdwn', text: '*Send daily schedule briefing*' }, value: 'daily_briefing_enabled' },
+                ],
+              } : {}),
+            }],
+          },
+          {
+            type: 'section', block_id: 'briefing_time',
+            text: { type: 'mrkdwn', text: '*Briefing delivery time*' },
+            accessory: {
+              type: 'static_select', action_id: 'briefing_time_select',
+              initial_option: timeOptions.find(o => o.value === (settings.daily_briefing_time || '08:30')) || timeOptions[5],
+              options: timeOptions,
+            },
+          },
+          { type: 'header', text: { type: 'plain_text', text: 'Focus Time' } },
+          {
+            type: 'section', block_id: 'focus_goal',
+            text: { type: 'mrkdwn', text: '*Weekly focus time goal*' },
+            accessory: {
+              type: 'static_select', action_id: 'focus_goal_select',
+              initial_option: focusOptions.find(o => o.value === String(settings.focus_time_goal_hours || 0)) || focusOptions[0],
+              options: focusOptions,
+            },
+          },
+          { type: 'header', text: { type: 'plain_text', text: 'No-Meeting Days' } },
+          {
+            type: 'actions', block_id: 'no_meeting_days',
+            elements: [{
+              type: 'checkboxes', action_id: 'no_meeting_days_checks',
+              options: dayOptions,
+              ...(noMeetingDays.length > 0 ? {
+                initial_options: dayOptions.filter(d => noMeetingDays.includes(d.value)),
+              } : {}),
+            }],
+          },
+          { type: 'header', text: { type: 'plain_text', text: 'Preferred Calendar' } },
+          {
+            type: 'section', block_id: 'preferred_provider',
+            text: { type: 'mrkdwn', text: '*Default calendar provider*' },
+            accessory: {
+              type: 'static_select', action_id: 'preferred_provider_select',
+              initial_option: providerOptions.find(o => o.value === (prefs.preferred_provider || 'auto')) || providerOptions[0],
+              options: providerOptions,
+            },
+          },
+        ],
+      },
+    });
+  } catch (error) {
+    console.error('/caleo-settings error:', error);
+  }
+});
+
+// Handle settings modal submission
+app.view('caleo_settings_modal', async ({ ack, view, body }: any) => {
+  await ack();
+  try {
+    const dbUserId = view.private_metadata;
+    const vals = view.state.values;
+
+    // Extract values from modal
+    const workHoursStart = vals.work_hours_start?.work_hours_start_select?.selected_option?.value;
+    const workHoursEnd = vals.work_hours_end?.work_hours_end_select?.selected_option?.value;
+    const defaultDuration = vals.default_duration?.default_duration_select?.selected_option?.value;
+    const bufferMinutes = vals.buffer_minutes?.buffer_minutes_select?.selected_option?.value;
+    const preferredProvider = vals.preferred_provider?.preferred_provider_select?.selected_option?.value;
+
+    const statusSyncChecks = (vals.status_sync?.status_sync_checks?.selected_options || []).map((o: any) => o.value);
+    const dailyBriefingChecks = (vals.daily_briefing?.daily_briefing_check?.selected_options || []).map((o: any) => o.value);
+    const briefingTime = vals.briefing_time?.briefing_time_select?.selected_option?.value;
+    const focusGoal = vals.focus_goal?.focus_goal_select?.selected_option?.value;
+    const noMeetingDays = (vals.no_meeting_days?.no_meeting_days_checks?.selected_options || []).map((o: any) => parseInt(o.value, 10));
+
+    // Update preferences
+    const prefUpdates: Record<string, any> = {};
+    if (workHoursStart) prefUpdates.work_hours_start = workHoursStart;
+    if (workHoursEnd) prefUpdates.work_hours_end = workHoursEnd;
+    if (defaultDuration) prefUpdates.default_duration_minutes = parseInt(defaultDuration, 10);
+    if (bufferMinutes !== undefined) prefUpdates.buffer_minutes = parseInt(bufferMinutes, 10);
+    if (preferredProvider) prefUpdates.preferred_provider = preferredProvider === 'auto' ? null : preferredProvider;
+
+    await repository.updatePreferences(dbUserId, prefUpdates);
+
+    // Update settings
+    await repository.updateUserSettings(dbUserId, {
+      status_sync_enabled: statusSyncChecks.includes('status_sync_enabled'),
+      show_event_titles: statusSyncChecks.includes('show_event_titles'),
+      daily_briefing_enabled: dailyBriefingChecks.includes('daily_briefing_enabled'),
+      daily_briefing_time: briefingTime || '08:30',
+      focus_time_goal_hours: focusGoal ? parseInt(focusGoal, 10) : 0,
+      no_meeting_days: noMeetingDays,
+    });
+
+    console.log(`[Settings] Updated for ${dbUserId}`);
+  } catch (error) {
+    console.error('Settings modal submission error:', error);
+  }
+});
+
+// /caleo-privacy command
+app.command('/caleo-privacy', async ({ command, ack, respond, client, body }: any) => {
+  await ack();
+  try {
+    const { dbUserId } = await ensureUser(client, command.user_id, body?.team_id);
+    const tokens = await repository.getTokensByUser(dbUserId);
+    const connectedProviders = tokens.map((t: any) => t.provider);
+
+    const providerSections: string[] = [];
+
+    if (connectedProviders.includes('google')) {
+      providerSections.push(`*Google Calendar:*
+:white_check_mark: Read your events (titles, times, attendees)
+:white_check_mark: Create, update, delete events
+:x: Cannot access other people's calendars directly
+:x: Does not store event descriptions`);
+    }
+
+    if (connectedProviders.includes('microsoft')) {
+      providerSections.push(`*Microsoft Outlook:*
+:white_check_mark: Read your events (titles, times, attendees)
+:white_check_mark: Create, update, delete events
+:x: Cannot access other people's calendars directly
+:x: Does not store event descriptions`);
+    }
+
+    if (providerSections.length === 0) {
+      providerSections.push('_No calendar providers connected. Use /caleo-auth to connect._');
+    }
+
+    const blocks = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: '*What Caleo can access:*',
+        },
+      },
+      ...providerSections.map(text => ({
+        type: 'section',
+        text: { type: 'mrkdwn', text },
+      })),
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Slack:*
+:white_check_mark: Read messages sent directly to Caleo
+:white_check_mark: Read @mentions of Caleo in channels
+:x: Cannot read other channels or DMs
+:x: Does not store message history beyond your session (30 min)`,
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Your data:*
+\u2022 Calendar tokens: encrypted (AES-256-GCM)
+\u2022 Conversation history: kept for 30 minutes, then discarded
+\u2022 To revoke access: /caleo-auth \u2192 disconnect providers`,
+        },
+      },
+    ];
+
+    await respond({ text: 'Caleo Privacy & Permissions', blocks });
+  } catch (error) {
+    console.error('/caleo-privacy error:', error);
+    await respond(`Sorry, something went wrong: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+});
+
 // Handle button action acknowledgment
 app.action('connect_microsoft', async ({ ack }: any) => { await ack(); });
 app.action('connect_google', async ({ ack }: any) => { await ack(); });
 app.action('billing_add_5', async ({ ack }: any) => { await ack(); });
 app.action('billing_add_10', async ({ ack }: any) => { await ack(); });
 app.action('billing_add_20', async ({ ack }: any) => { await ack(); });
+// Settings modal action acknowledgments
+app.action('work_hours_start_select', async ({ ack }: any) => { await ack(); });
+app.action('work_hours_end_select', async ({ ack }: any) => { await ack(); });
+app.action('default_duration_select', async ({ ack }: any) => { await ack(); });
+app.action('buffer_minutes_select', async ({ ack }: any) => { await ack(); });
+app.action('status_sync_checks', async ({ ack }: any) => { await ack(); });
+app.action('daily_briefing_check', async ({ ack }: any) => { await ack(); });
+app.action('briefing_time_select', async ({ ack }: any) => { await ack(); });
+app.action('focus_goal_select', async ({ ack }: any) => { await ack(); });
+app.action('no_meeting_days_checks', async ({ ack }: any) => { await ack(); });
+app.action('preferred_provider_select', async ({ ack }: any) => { await ack(); });
 
 // App mentions
 app.event('app_mention', async ({ event, body, client }: any) => {
@@ -1019,6 +1324,10 @@ app.error((error: any) => {
   console.error('Slack app error:', error);
 });
 
+// Ambient service instances (created after app.start so we have the slack client)
+let statusSyncService: StatusSyncService | null = null;
+let dailyBriefingService: DailyBriefingService | null = null;
+
 async function start(): Promise<void> {
   // Start the HTTP server for health check + OAuth
   httpServer.listen(httpPort, () => {
@@ -1029,15 +1338,25 @@ async function start(): Promise<void> {
   // Start the Slack app (Socket Mode connects via WebSocket, not the HTTP port)
   await app.start();
 
+  // Start ambient services (status sync + daily briefing)
+  const slackClient = app.client;
+  statusSyncService = new StatusSyncService({ slackClient, googleOAuth, microsoftOAuth });
+  dailyBriefingService = new DailyBriefingService({ slackClient, googleOAuth, microsoftOAuth });
+  statusSyncService.start();
+  dailyBriefingService.start();
+
   console.log(`Caleo Slack bot is running`);
   console.log(`Health check: http://localhost:${httpPort}/api/health`);
   console.log(`OAuth callback: http://localhost:${httpPort}/auth/callback`);
   console.log(`Mode: ${socketMode ? 'Socket Mode' : 'HTTP Events API'}`);
+  console.log(`Ambient services: Status Sync + Daily Briefing`);
 }
 
 // Graceful shutdown for ECS SIGTERM
 function shutdown(signal: string) {
   console.log(`${signal} received — shutting down gracefully...`);
+  statusSyncService?.stop();
+  dailyBriefingService?.stop();
   httpServer.close(() => console.log('HTTP server closed'));
   pool.end().then(() => console.log('DB pool closed')).catch(() => {});
   setTimeout(() => { console.log('Forcing exit'); process.exit(0); }, 10000);

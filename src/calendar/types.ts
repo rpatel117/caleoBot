@@ -35,6 +35,7 @@ export interface CreateEventParams {
   body?: string;
   isOnlineMeeting?: boolean;
   timezone?: string;
+  recurrence?: string; // RRULE format (e.g., "RRULE:FREQ=WEEKLY;COUNT=10")
 }
 
 export interface UpdateEventParams {

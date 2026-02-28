@@ -550,6 +550,112 @@ export class Repository {
     return result.rows;
   }
 
+  // ---------- User settings (ambient features) ----------
+
+  async getUserSettings(userId: string): Promise<any> {
+    const result = await pool.query(
+      `SELECT * FROM user_settings WHERE user_id = $1`,
+      [userId]
+    );
+    if (result.rows[0]) return result.rows[0];
+    return {
+      user_id: userId,
+      status_sync_enabled: false,
+      show_event_titles: false,
+      dnd_during_focus: false,
+      daily_briefing_enabled: true,
+      daily_briefing_time: '08:30',
+      focus_time_goal_hours: 0,
+      no_meeting_days: [],
+    };
+  }
+
+  async updateUserSettings(userId: string, updates: Record<string, any>): Promise<any> {
+    const columns = ['user_id'];
+    const values: any[] = [userId];
+    const placeholders = ['$1'];
+    const setClauses: string[] = ['updated_at = now()'];
+    let idx = 2;
+
+    const allowedFields = [
+      'status_sync_enabled', 'show_event_titles', 'dnd_during_focus',
+      'daily_briefing_enabled', 'daily_briefing_time', 'focus_time_goal_hours',
+      'no_meeting_days',
+    ];
+
+    for (const field of allowedFields) {
+      if (updates[field] !== undefined) {
+        columns.push(field);
+        values.push(updates[field]);
+        placeholders.push(`$${idx}`);
+        setClauses.push(`${field} = $${idx}`);
+        idx++;
+      }
+    }
+
+    const result = await pool.query(
+      `INSERT INTO user_settings (${columns.join(', ')})
+       VALUES (${placeholders.join(', ')})
+       ON CONFLICT (user_id) DO UPDATE SET ${setClauses.join(', ')}
+       RETURNING *`,
+      values
+    );
+    return result.rows[0];
+  }
+
+  async getActiveStatusSyncUsers(): Promise<any[]> {
+    const result = await pool.query(
+      `SELECT us.*, u.external_id AS slack_user_id, u.timezone, u.id AS db_user_id
+       FROM user_settings us
+       JOIN users u ON u.id = us.user_id
+       WHERE us.status_sync_enabled = true`
+    );
+    return result.rows;
+  }
+
+  async getBriefingUsers(timeStr: string): Promise<any[]> {
+    const result = await pool.query(
+      `SELECT us.*, u.external_id AS slack_user_id, u.timezone, u.display_name, u.id AS db_user_id
+       FROM user_settings us
+       JOIN users u ON u.id = us.user_id
+       WHERE us.daily_briefing_enabled = true AND us.daily_briefing_time = $1`,
+      [timeStr]
+    );
+    return result.rows;
+  }
+
+  // ---------- Audit log ----------
+
+  async logAction(params: {
+    userId: string;
+    action: string;
+    eventId?: string;
+    provider?: string;
+    details?: Record<string, any>;
+    slackChannel?: string;
+    slackThreadTs?: string;
+  }): Promise<any> {
+    const result = await pool.query(
+      `INSERT INTO audit_log (user_id, action, event_id, provider, details, slack_channel, slack_thread_ts)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [
+        params.userId, params.action, params.eventId || null,
+        params.provider || null, params.details ? JSON.stringify(params.details) : null,
+        params.slackChannel || null, params.slackThreadTs || null,
+      ]
+    );
+    return result.rows[0];
+  }
+
+  async getAuditLog(userId: string, limit: number = 20): Promise<any[]> {
+    const result = await pool.query(
+      `SELECT * FROM audit_log WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+      [userId, limit]
+    );
+    return result.rows;
+  }
+
   // Health check
   async testConnection(): Promise<boolean> {
     try {

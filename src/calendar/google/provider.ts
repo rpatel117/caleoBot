@@ -52,6 +52,10 @@ export class GoogleCalendarProvider implements CalendarProvider {
       body.description = params.body;
     }
 
+    if (params.recurrence) {
+      body.recurrence = [params.recurrence];
+    }
+
     if (params.isOnlineMeeting) {
       body.conferenceData = {
         createRequest: {
