@@ -16,6 +16,10 @@ describe('Agent Config', () => {
       expect(AGENT_CONFIG.sessionTimeoutMinutes).toBe(30);
     });
 
+    test('DM session timeout is 5 minutes', () => {
+      expect(AGENT_CONFIG.dmSessionTimeoutMinutes).toBe(5);
+    });
+
     test('conversation length is capped', () => {
       expect(AGENT_CONFIG.maxConversationLength).toBe(20);
     });
@@ -260,15 +264,113 @@ describe('Agent Config', () => {
 
     test('prompt is not excessively long (cost control)', () => {
       const prompt = buildSystemPrompt(baseCtx);
-      // Base prompt grew with Focus Time, Impact Scoring, Recurring, Undo, Production Behavior sections
-      // Should still stay under ~8000 chars to keep input tokens reasonable
-      expect(prompt.length).toBeLessThan(8000);
+      // Base prompt grew with Focus Time, Impact Scoring, Recurring, Undo, Production Behavior, Event Status Intelligence sections
+      // Should still stay under ~8500 chars to keep input tokens reasonable
+      expect(prompt.length).toBeLessThan(8500);
     });
 
     test('heavy week message for >15 events', () => {
       const ctx = { ...baseCtx, weekEventCount: 20 };
       const prompt = buildSystemPrompt(ctx);
       expect(prompt).toContain('a lot of');
+    });
+
+    test('includes EVENT STATUS INTELLIGENCE section', () => {
+      const prompt = buildSystemPrompt(baseCtx);
+      expect(prompt).toContain('EVENT STATUS INTELLIGENCE');
+      expect(prompt).toContain('audit counts');
+      expect(prompt).toContain('unresponded invites');
+    });
+
+    test('renders [recurring] tag on recurring events', () => {
+      const ctx = {
+        ...baseCtx,
+        todayEvents: [{
+          id: 'evt-r',
+          subject: 'Weekly Standup',
+          start: '9:00 AM',
+          end: '9:30 AM',
+          attendees: [],
+          hasVideoLink: false,
+          isRecurring: true,
+        }],
+      };
+      const prompt = buildSystemPrompt(ctx);
+      expect(prompt).toContain('[recurring]');
+    });
+
+    test('renders [cancelled] tag on cancelled events', () => {
+      const ctx = {
+        ...baseCtx,
+        todayEvents: [{
+          id: 'evt-c',
+          subject: 'Cancelled Meeting',
+          start: '2:00 PM',
+          end: '3:00 PM',
+          attendees: [],
+          hasVideoLink: false,
+          status: 'cancelled' as const,
+        }],
+      };
+      const prompt = buildSystemPrompt(ctx);
+      expect(prompt).toContain('[cancelled]');
+    });
+
+    test('renders [you declined] tag on declined events', () => {
+      const ctx = {
+        ...baseCtx,
+        todayEvents: [{
+          id: 'evt-d',
+          subject: 'Design Review',
+          start: '11:00 AM',
+          end: '12:00 PM',
+          attendees: [],
+          hasVideoLink: false,
+          selfResponse: 'declined' as const,
+        }],
+      };
+      const prompt = buildSystemPrompt(ctx);
+      expect(prompt).toContain('[you declined]');
+    });
+
+    test('renders [needs response] tag on unresponded events', () => {
+      const ctx = {
+        ...baseCtx,
+        todayEvents: [{
+          id: 'evt-n',
+          subject: 'New Invite',
+          start: '3:00 PM',
+          end: '4:00 PM',
+          attendees: [],
+          hasVideoLink: false,
+          selfResponse: 'needsAction' as const,
+        }],
+      };
+      const prompt = buildSystemPrompt(ctx);
+      expect(prompt).toContain('[needs response]');
+    });
+
+    test('renders status tags in multi-day view', () => {
+      const ctx = {
+        ...baseCtx,
+        multiDayEvents: [{
+          dateStr: '2026-03-02',
+          label: 'today',
+          events: [{
+            id: 'evt-m',
+            subject: 'Recurring Sync',
+            start: '10:00 AM',
+            end: '10:30 AM',
+            attendees: [],
+            hasVideoLink: false,
+            isRecurring: true,
+            status: 'cancelled' as const,
+          }],
+        }],
+      };
+      const prompt = buildSystemPrompt(ctx);
+      expect(prompt).toContain('[recurring]');
+      expect(prompt).toContain('[cancelled]');
     });
   });
 });

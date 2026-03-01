@@ -336,5 +336,136 @@ describe('MicrosoftCalendarProvider', () => {
       expect(events[0].attendees?.[0].emailAddress.address).toBe('alice@test.com');
       expect(events[0].onlineMeetingUrl).toBe('https://teams.microsoft.com/meet/123');
     });
+
+    test('maps cancelled event (isCancelled)', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          value: [{
+            id: 'evt-cancelled',
+            subject: 'Cancelled Meeting',
+            isCancelled: true,
+            start: { dateTime: '2026-03-02T14:00:00', timeZone: 'UTC' },
+            end: { dateTime: '2026-03-02T15:00:00', timeZone: 'UTC' },
+          }],
+        }),
+      });
+
+      const events = await provider.getEvents(accessToken, new Date('2026-03-02'), new Date('2026-03-03'));
+      expect(events[0].status).toBe('cancelled');
+    });
+
+    test('maps recurring event (type: occurrence)', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          value: [{
+            id: 'evt-recurring',
+            subject: 'Weekly Standup',
+            type: 'occurrence',
+            start: { dateTime: '2026-03-02T09:00:00', timeZone: 'America/Chicago' },
+            end: { dateTime: '2026-03-02T09:30:00', timeZone: 'America/Chicago' },
+          }],
+        }),
+      });
+
+      const events = await provider.getEvents(accessToken, new Date('2026-03-02'), new Date('2026-03-03'));
+      expect(events[0].isRecurring).toBe(true);
+    });
+
+    test('maps recurring exception event', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          value: [{
+            id: 'evt-exception',
+            subject: 'Modified Weekly',
+            type: 'exception',
+            start: { dateTime: '2026-03-02T09:00:00', timeZone: 'America/Chicago' },
+            end: { dateTime: '2026-03-02T09:30:00', timeZone: 'America/Chicago' },
+          }],
+        }),
+      });
+
+      const events = await provider.getEvents(accessToken, new Date('2026-03-02'), new Date('2026-03-03'));
+      expect(events[0].isRecurring).toBe(true);
+    });
+
+    test('maps self declined response', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          value: [{
+            id: 'evt-declined',
+            subject: 'Design Review',
+            start: { dateTime: '2026-03-02T11:00:00', timeZone: 'UTC' },
+            end: { dateTime: '2026-03-02T12:00:00', timeZone: 'UTC' },
+            responseStatus: { response: 'declined', time: '2026-03-01T10:00:00Z' },
+            attendees: [
+              { emailAddress: { name: 'Alice', address: 'alice@test.com' }, type: 'required', status: { response: 'accepted' } },
+            ],
+          }],
+        }),
+      });
+
+      const events = await provider.getEvents(accessToken, new Date('2026-03-02'), new Date('2026-03-03'));
+      expect(events[0].selfResponseStatus).toBe('declined');
+      expect(events[0].attendees?.[0].responseStatus).toBe('accepted');
+    });
+
+    test('maps tentativelyAccepted to tentative', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          value: [{
+            id: 'evt-tentative',
+            subject: 'Maybe Meeting',
+            start: { dateTime: '2026-03-02T13:00:00', timeZone: 'UTC' },
+            end: { dateTime: '2026-03-02T14:00:00', timeZone: 'UTC' },
+            responseStatus: { response: 'tentativelyAccepted' },
+          }],
+        }),
+      });
+
+      const events = await provider.getEvents(accessToken, new Date('2026-03-02'), new Date('2026-03-03'));
+      expect(events[0].selfResponseStatus).toBe('tentative');
+    });
+
+    test('maps notResponded to needsAction', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          value: [{
+            id: 'evt-noresponse',
+            subject: 'Pending Invite',
+            start: { dateTime: '2026-03-02T15:00:00', timeZone: 'UTC' },
+            end: { dateTime: '2026-03-02T16:00:00', timeZone: 'UTC' },
+            responseStatus: { response: 'notResponded' },
+          }],
+        }),
+      });
+
+      const events = await provider.getEvents(accessToken, new Date('2026-03-02'), new Date('2026-03-03'));
+      expect(events[0].selfResponseStatus).toBe('needsAction');
+    });
+
+    test('omits selfResponseStatus for organizer', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          value: [{
+            id: 'evt-organizer',
+            subject: 'My Meeting',
+            start: { dateTime: '2026-03-02T10:00:00', timeZone: 'UTC' },
+            end: { dateTime: '2026-03-02T11:00:00', timeZone: 'UTC' },
+            responseStatus: { response: 'organizer' },
+          }],
+        }),
+      });
+
+      const events = await provider.getEvents(accessToken, new Date('2026-03-02'), new Date('2026-03-03'));
+      // organizer maps to accepted, which is omitted
+      expect(events[0].selfResponseStatus).toBeUndefined();
+    });
   });
 });

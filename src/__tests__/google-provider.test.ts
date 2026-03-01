@@ -152,6 +152,19 @@ describe('GoogleCalendarProvider', () => {
     });
   });
 
+  describe('getEvents', () => {
+    test('includes maxAttendees=100 in the request URL', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ items: [] }),
+      });
+
+      await provider.getEvents(accessToken, new Date('2026-03-02'), new Date('2026-03-03'));
+
+      expect(mockFetch.mock.calls[0][0]).toContain('maxAttendees=100');
+    });
+  });
+
   describe('mapEvent', () => {
     test('maps Google event to CalendarEvent format', async () => {
       mockFetch.mockResolvedValue({
@@ -198,6 +211,87 @@ describe('GoogleCalendarProvider', () => {
 
       const events = await provider.getEvents(accessToken, new Date('2026-03-02'), new Date('2026-03-03'));
       expect(events[0].subject).toBe('No Title');
+    });
+
+    test('maps recurring event (recurringEventId present)', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          items: [{
+            id: 'g-recurring-1',
+            summary: 'Weekly Standup',
+            recurringEventId: 'g-master-123',
+            start: { dateTime: '2026-03-02T09:00:00-06:00', timeZone: 'America/Chicago' },
+            end: { dateTime: '2026-03-02T09:30:00-06:00', timeZone: 'America/Chicago' },
+            status: 'confirmed',
+          }],
+        }),
+      });
+
+      const events = await provider.getEvents(accessToken, new Date('2026-03-02'), new Date('2026-03-03'));
+      expect(events[0].isRecurring).toBe(true);
+      expect(events[0].status).toBeUndefined(); // confirmed is omitted
+    });
+
+    test('maps cancelled event', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          items: [{
+            id: 'g-cancelled-1',
+            summary: 'Cancelled Meeting',
+            start: { dateTime: '2026-03-02T14:00:00-06:00', timeZone: 'America/Chicago' },
+            end: { dateTime: '2026-03-02T15:00:00-06:00', timeZone: 'America/Chicago' },
+            status: 'cancelled',
+          }],
+        }),
+      });
+
+      const events = await provider.getEvents(accessToken, new Date('2026-03-02'), new Date('2026-03-03'));
+      expect(events[0].status).toBe('cancelled');
+    });
+
+    test('maps self declined response', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          items: [{
+            id: 'g-declined-1',
+            summary: 'Design Review',
+            start: { dateTime: '2026-03-02T11:00:00-06:00', timeZone: 'America/Chicago' },
+            end: { dateTime: '2026-03-02T12:00:00-06:00', timeZone: 'America/Chicago' },
+            attendees: [
+              { email: 'me@test.com', self: true, responseStatus: 'declined' },
+              { email: 'alice@test.com', displayName: 'Alice', responseStatus: 'accepted' },
+            ],
+          }],
+        }),
+      });
+
+      const events = await provider.getEvents(accessToken, new Date('2026-03-02'), new Date('2026-03-03'));
+      expect(events[0].selfResponseStatus).toBe('declined');
+      expect(events[0].attendees?.[0].responseStatus).toBe('declined');
+      expect(events[0].attendees?.[1].responseStatus).toBe('accepted');
+    });
+
+    test('omits selfResponseStatus when accepted', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          items: [{
+            id: 'g-accepted-1',
+            summary: 'Team Sync',
+            start: { dateTime: '2026-03-02T10:00:00-06:00', timeZone: 'America/Chicago' },
+            end: { dateTime: '2026-03-02T10:30:00-06:00', timeZone: 'America/Chicago' },
+            attendees: [
+              { email: 'me@test.com', self: true, responseStatus: 'accepted' },
+            ],
+          }],
+        }),
+      });
+
+      const events = await provider.getEvents(accessToken, new Date('2026-03-02'), new Date('2026-03-03'));
+      expect(events[0].selfResponseStatus).toBeUndefined();
     });
   });
 

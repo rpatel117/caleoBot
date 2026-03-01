@@ -20,7 +20,7 @@ jest.mock('../database/client', () => ({
 }));
 
 jest.mock('../agent/config', () => ({
-  AGENT_CONFIG: { sessionTimeoutMinutes: 30 },
+  AGENT_CONFIG: { sessionTimeoutMinutes: 30, dmSessionTimeoutMinutes: 5 },
 }));
 
 jest.mock('../billing/plans', () => ({

@@ -125,7 +125,7 @@ describe('Security', () => {
         default: { query: jest.fn().mockResolvedValue({ rows: [] }) },
       }));
       jest.mock('../agent/config', () => ({
-        AGENT_CONFIG: { sessionTimeoutMinutes: 30 },
+        AGENT_CONFIG: { sessionTimeoutMinutes: 30, dmSessionTimeoutMinutes: 5 },
       }));
       jest.mock('../billing/plans', () => ({
         PLAN_LIMITS: { free: { meetingsPerMonth: 10, messagesPerMonth: 50 } },
@@ -145,7 +145,7 @@ describe('Security', () => {
         default: { query: jest.fn().mockResolvedValue({ rows: [] }) },
       }));
       jest.mock('../agent/config', () => ({
-        AGENT_CONFIG: { sessionTimeoutMinutes: 30 },
+        AGENT_CONFIG: { sessionTimeoutMinutes: 30, dmSessionTimeoutMinutes: 5 },
       }));
       jest.mock('../billing/plans', () => ({
         PLAN_LIMITS: { free: { meetingsPerMonth: 10, messagesPerMonth: 50 } },
@@ -165,7 +165,7 @@ describe('Security', () => {
         default: { query: jest.fn().mockResolvedValue({ rows: [] }) },
       }));
       jest.mock('../agent/config', () => ({
-        AGENT_CONFIG: { sessionTimeoutMinutes: 30 },
+        AGENT_CONFIG: { sessionTimeoutMinutes: 30, dmSessionTimeoutMinutes: 5 },
       }));
       jest.mock('../billing/plans', () => ({
         PLAN_LIMITS: { free: { meetingsPerMonth: 10, messagesPerMonth: 50 } },
@@ -188,7 +188,7 @@ describe('Security', () => {
         default: { query: mockQuery },
       }));
       jest.mock('../agent/config', () => ({
-        AGENT_CONFIG: { sessionTimeoutMinutes: 30 },
+        AGENT_CONFIG: { sessionTimeoutMinutes: 30, dmSessionTimeoutMinutes: 5 },
       }));
       jest.mock('../billing/plans', () => ({
         PLAN_LIMITS: { free: { meetingsPerMonth: 10, messagesPerMonth: 50 } },
@@ -214,7 +214,7 @@ describe('Security', () => {
         default: { query: mockQuery },
       }));
       jest.mock('../agent/config', () => ({
-        AGENT_CONFIG: { sessionTimeoutMinutes: 30 },
+        AGENT_CONFIG: { sessionTimeoutMinutes: 30, dmSessionTimeoutMinutes: 5 },
       }));
       jest.mock('../billing/plans', () => ({
         PLAN_LIMITS: { free: { meetingsPerMonth: 10, messagesPerMonth: 50 } },

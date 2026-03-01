@@ -21,9 +21,12 @@ export function formatEventsForPrompt(events: CalendarEvent[], tz: string): Form
     const attendees = (e.attendees || []).map(a => {
       const name = a.emailAddress.name;
       const email = a.emailAddress.address;
-      return name ? `${name} <${email}>` : email;
+      let label = name ? `${name} <${email}>` : email;
+      if (a.responseStatus === 'declined') label += ' [declined]';
+      else if (a.responseStatus === 'tentative') label += ' [tentative]';
+      return label;
     });
-    return {
+    const snapshot: FormattedCalendarSnapshot = {
       id: e.id,
       subject: e.subject,
       start,
@@ -31,6 +34,12 @@ export function formatEventsForPrompt(events: CalendarEvent[], tz: string): Form
       attendees,
       hasVideoLink: !!e.onlineMeetingUrl,
     };
+    if (e.isRecurring) snapshot.isRecurring = true;
+    if (e.status === 'cancelled' || e.status === 'tentative') snapshot.status = e.status;
+    if (e.selfResponseStatus === 'declined' || e.selfResponseStatus === 'tentative' || e.selfResponseStatus === 'needsAction') {
+      snapshot.selfResponse = e.selfResponseStatus;
+    }
+    return snapshot;
   });
 }
 
@@ -52,9 +61,10 @@ export function computeFreeTimeGaps(
   const workStartDate = new Date(`${dateStr}T${workStart}:00`);
   const workEndDate = new Date(`${dateStr}T${workEnd}:00`);
 
-  // Sort events by start time
+  // Filter out cancelled/declined events, then sort by start time
   const sorted = events
     .filter(e => e.start?.dateTime && e.end?.dateTime)
+    .filter(e => e.status !== 'cancelled' && e.selfResponseStatus !== 'declined')
     .map(e => ({
       start: new Date(e.start.dateTime),
       end: new Date(e.end.dateTime),
@@ -97,6 +107,7 @@ export function computeFreeTimeGaps(
 export function detectConflicts(events: CalendarEvent[], tz: string): string[] {
   const sorted = events
     .filter(e => e.start?.dateTime && e.end?.dateTime)
+    .filter(e => e.status !== 'cancelled' && e.selfResponseStatus !== 'declined')
     .sort((a, b) => new Date(a.start.dateTime).getTime() - new Date(b.start.dateTime).getTime());
 
   const conflicts: string[] = [];

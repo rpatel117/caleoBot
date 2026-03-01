@@ -1,3 +1,6 @@
+export type EventStatus = 'confirmed' | 'tentative' | 'cancelled';
+export type ResponseStatus = 'accepted' | 'declined' | 'tentative' | 'needsAction' | 'none';
+
 export interface CalendarEvent {
   id: string;
   subject: string;
@@ -15,6 +18,7 @@ export interface CalendarEvent {
       address: string;
     };
     type: string;
+    responseStatus?: ResponseStatus;
   }>;
   location?: {
     displayName: string;
@@ -24,6 +28,9 @@ export interface CalendarEvent {
   };
   webLink?: string;
   onlineMeetingUrl?: string;
+  status?: EventStatus;
+  selfResponseStatus?: ResponseStatus;
+  isRecurring?: boolean;
 }
 
 export interface CreateEventParams {

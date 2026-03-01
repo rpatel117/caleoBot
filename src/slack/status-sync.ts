@@ -94,8 +94,9 @@ export class StatusSyncService {
     const events = await this.getEvents(dbUserId, windowStart, new Date(now + 4 * 60 * 60_000));
     if (!events || events.length === 0) return null;
 
-    // Find an event that's currently happening
+    // Find an event that's currently happening (skip cancelled/declined)
     for (const event of events) {
+      if (event.status === 'cancelled' || event.selfResponseStatus === 'declined') continue;
       const start = new Date(event.start.dateTime).getTime();
       const end = new Date(event.end.dateTime).getTime();
       if (start <= now && end > now) {

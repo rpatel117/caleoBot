@@ -1,6 +1,7 @@
 import {
   CalendarProvider, CalendarEvent, CreateEventParams, UpdateEventParams,
   AvailabilityResult, FreeTimeParams, TimeSlot, AttendeeAvailability,
+  EventStatus, ResponseStatus,
 } from '../types';
 
 const BASE_URL = 'https://www.googleapis.com/calendar/v3';
@@ -12,6 +13,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
       timeMax: end.toISOString(),
       singleEvents: 'true',
       orderBy: 'startTime',
+      maxAttendees: '100',
     });
 
     const response = await fetch(`${BASE_URL}/calendars/primary/events?${params}`, {
@@ -265,7 +267,11 @@ export class GoogleCalendarProvider implements CalendarProvider {
   }
 
   private mapEvent(raw: any): CalendarEvent {
-    return {
+    const status = this.mapGoogleEventStatus(raw.status);
+    const selfAttendee = raw.attendees?.find((a: any) => a.self === true);
+    const selfResponse = selfAttendee ? this.mapGoogleResponseStatus(selfAttendee.responseStatus) : undefined;
+
+    const event: CalendarEvent = {
       id: raw.id,
       subject: raw.summary || 'No Title',
       start: {
@@ -282,11 +288,37 @@ export class GoogleCalendarProvider implements CalendarProvider {
           address: a.email || '',
         },
         type: a.organizer ? 'organizer' : (a.optional ? 'optional' : 'required'),
+        responseStatus: this.mapGoogleResponseStatus(a.responseStatus),
       })),
       location: raw.location ? { displayName: raw.location } : undefined,
       body: raw.description ? { content: raw.description } : undefined,
       webLink: raw.htmlLink,
       onlineMeetingUrl: raw.hangoutLink || raw.conferenceData?.entryPoints?.[0]?.uri,
     };
+
+    if (status && status !== 'confirmed') event.status = status;
+    if (selfResponse && selfResponse !== 'accepted') event.selfResponseStatus = selfResponse;
+    if (raw.recurringEventId) event.isRecurring = true;
+
+    return event;
+  }
+
+  private mapGoogleEventStatus(status: string | undefined): EventStatus | undefined {
+    switch (status) {
+      case 'cancelled': return 'cancelled';
+      case 'tentative': return 'tentative';
+      case 'confirmed': return 'confirmed';
+      default: return undefined;
+    }
+  }
+
+  private mapGoogleResponseStatus(status: string | undefined): ResponseStatus | undefined {
+    switch (status) {
+      case 'accepted': return 'accepted';
+      case 'declined': return 'declined';
+      case 'tentative': return 'tentative';
+      case 'needsAction': return 'needsAction';
+      default: return undefined;
+    }
   }
 }

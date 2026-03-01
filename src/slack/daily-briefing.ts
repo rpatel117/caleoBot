@@ -110,17 +110,35 @@ export class DailyBriefingService {
         text: { type: 'mrkdwn', text: 'No meetings today. Enjoy your free day!' },
       });
     } else {
-      // Total meeting time
+      // Categorize events by status
+      let cancelledCount = 0;
+      let declinedCount = 0;
       let totalMinutes = 0;
       const eventLines: string[] = [];
       for (const e of events) {
+        const isCancelled = e.status === 'cancelled';
+        const isDeclined = e.selfResponseStatus === 'declined';
+        if (isCancelled) cancelledCount++;
+        if (isDeclined) declinedCount++;
+
         const start = new Date(e.start.dateTime);
         const end = new Date(e.end.dateTime);
-        totalMinutes += (end.getTime() - start.getTime()) / 60_000;
+        // Only count active events toward meeting time total
+        if (!isCancelled && !isDeclined) {
+          totalMinutes += (end.getTime() - start.getTime()) / 60_000;
+        }
         const startStr = start.toLocaleTimeString('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' });
         const endStr = end.toLocaleTimeString('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' });
         const attendeeCount = e.attendees?.length || 0;
-        let line = `${startStr} - ${endStr} -- ${e.subject}`;
+        let line = `${startStr} - ${endStr} -- `;
+        // Add status tags
+        if (isCancelled) {
+          line += `~${e.subject}~`;
+        } else {
+          line += e.subject;
+        }
+        if (e.isRecurring) line += ' :repeat:';
+        if (isDeclined) line += ' _(declined)_';
         if (attendeeCount > 0) line += ` (${attendeeCount} attendees)`;
         eventLines.push(line);
       }
@@ -129,13 +147,27 @@ export class DailyBriefingService {
       const mins = Math.round(totalMinutes % 60);
       const timeStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
 
+      // Audit summary
+      const activeCount = events.length - cancelledCount - declinedCount;
+      let summaryParts = [`*${events.length} event${events.length > 1 ? 's' : ''} today*`];
+      if (cancelledCount > 0 || declinedCount > 0) {
+        summaryParts.push(`(${activeCount} active`);
+        if (cancelledCount > 0) summaryParts.push(`${cancelledCount} cancelled`);
+        if (declinedCount > 0) summaryParts.push(`${declinedCount} declined`);
+        // Join the parts inside parentheses
+        const inner = [String(activeCount) + ' active', cancelledCount > 0 ? cancelledCount + ' cancelled' : '', declinedCount > 0 ? declinedCount + ' declined' : ''].filter(Boolean).join(', ');
+        summaryParts = [`*${events.length} event${events.length > 1 ? 's' : ''} today* (${inner})`];
+      }
+      summaryParts.push(`— ${timeStr} in meetings`);
+
       blocks.push({
         type: 'section',
-        text: { type: 'mrkdwn', text: `*${events.length} meeting${events.length > 1 ? 's' : ''} today* (${timeStr} total)\n${eventLines.map(l => `\u2022 ${l}`).join('\n')}` },
+        text: { type: 'mrkdwn', text: `${summaryParts.join(' ')}\n${eventLines.map(l => `\u2022 ${l}`).join('\n')}` },
       });
 
-      // Detect conflicts
-      const conflicts = this.detectConflicts(events, tz);
+      // Detect conflicts (only active events)
+      const activeEvents = events.filter(e => e.status !== 'cancelled' && e.selfResponseStatus !== 'declined');
+      const conflicts = this.detectConflicts(activeEvents, tz);
       if (conflicts.length > 0) {
         blocks.push({
           type: 'section',
@@ -143,8 +175,8 @@ export class DailyBriefingService {
         });
       }
 
-      // Free time
-      const freeBlocks = this.computeFreeTime(events, tz);
+      // Free time (only active events)
+      const freeBlocks = this.computeFreeTime(activeEvents, tz);
       if (freeBlocks.length > 0) {
         blocks.push({
           type: 'section',

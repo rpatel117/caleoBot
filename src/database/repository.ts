@@ -150,7 +150,11 @@ export class Repository {
         [existing.rows[0].id]
       );
 
-      const timeoutMs = AGENT_CONFIG.sessionTimeoutMinutes * 60 * 1000;
+      const isDm = !threadTs;
+      const timeoutMinutes = isDm
+        ? AGENT_CONFIG.dmSessionTimeoutMinutes
+        : AGENT_CONFIG.sessionTimeoutMinutes;
+      const timeoutMs = timeoutMinutes * 60 * 1000;
       const isStale = lastMsg.rows[0] &&
         (Date.now() - new Date(lastMsg.rows[0].created_at).getTime()) > timeoutMs;
 

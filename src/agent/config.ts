@@ -4,7 +4,8 @@ export const AGENT_CONFIG = {
   maxTokens: 4096,
   temperature: 0.7,
   maxConversationLength: 20,
-  sessionTimeoutMinutes: 30
+  sessionTimeoutMinutes: 30,
+  dmSessionTimeoutMinutes: 5
 };
 
 // ---------- Dynamic prompt types ----------

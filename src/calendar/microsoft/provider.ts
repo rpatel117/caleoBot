@@ -1,6 +1,7 @@
 import {
   CalendarProvider, CalendarEvent, CreateEventParams, UpdateEventParams,
   AvailabilityResult, FreeTimeParams, TimeSlot, AttendeeAvailability,
+  ResponseStatus,
 } from '../types';
 
 const BASE_URL = 'https://graph.microsoft.com/v1.0';
@@ -354,7 +355,9 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
   }
 
   private mapEvent(raw: any): CalendarEvent {
-    return {
+    const selfResponse = this.mapMsResponseStatus(raw.responseStatus?.response);
+
+    const event: CalendarEvent = {
       id: raw.id,
       subject: raw.subject || 'No Title',
       start: {
@@ -371,11 +374,30 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
           address: a.emailAddress?.address || '',
         },
         type: a.type || 'required',
+        responseStatus: this.mapMsResponseStatus(a.status?.response),
       })),
       location: raw.location?.displayName ? { displayName: raw.location.displayName } : undefined,
       body: raw.body?.content ? { content: raw.body.content } : undefined,
       webLink: raw.webLink,
       onlineMeetingUrl: raw.onlineMeeting?.joinUrl,
     };
+
+    if (raw.isCancelled) event.status = 'cancelled';
+    if (selfResponse && selfResponse !== 'accepted') event.selfResponseStatus = selfResponse;
+    if (raw.type === 'occurrence' || raw.type === 'exception') event.isRecurring = true;
+
+    return event;
+  }
+
+  private mapMsResponseStatus(response: string | undefined): ResponseStatus | undefined {
+    switch (response) {
+      case 'accepted': return 'accepted';
+      case 'declined': return 'declined';
+      case 'tentativelyAccepted': return 'tentative';
+      case 'notResponded': return 'needsAction';
+      case 'organizer': return 'accepted';
+      case 'none': return 'none';
+      default: return undefined;
+    }
   }
 }

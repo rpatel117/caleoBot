@@ -66,7 +66,15 @@ See `env.template` for full list. Critical ones:
 - `USE_REMOTE_AGENT=true`, `AGENT_ENDPOINT` — Lambda agent URL
 - `NODE_ENV=production`
 
-## Security Notes
-- Secrets were historically committed to git (`.env`, `config.env`) — ALL secrets must be rotated
+## Security Notes — CRITICAL
+- **ALL production secrets were exposed** via ECS task definition dump (2026-02-28). The following MUST be rotated before launch:
+  - `ANTHROPIC_API_KEY`
+  - `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_SIGNING_SECRET`
+  - `GOOGLE_CLIENT_SECRET`
+  - `ENCRYPTION_KEY`
+  - `DATABASE_URL` password (RDS `caleo_admin`)
+  - Stripe keys (not yet in task def but may be in git history)
+- Secrets were also historically committed to git (`.env`, `config.env`)
 - `.gitignore` now excludes both files; they are NOT currently tracked
 - History cleanup requires `git filter-repo` + force push (not yet done)
+- **After rotating, move all secrets to AWS Secrets Manager** — currently plaintext in ECS task definition
