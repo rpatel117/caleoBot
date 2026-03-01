@@ -40,7 +40,7 @@ You (Slack)
 │  decides which tools to call:    │
 │                                  │
 │  ┌────────────────────────────┐  │
-│  │ 12 Tools Available:        │  │
+│  │ 20 Tools Available:        │  │
 │  │ • get_current_time         │  │
 │  │ • get_user_info            │  │
 │  │ • get_today_events         │  │
@@ -51,8 +51,16 @@ You (Slack)
 │  │ • delete_meeting           │  │
 │  │ • check_availability       │  │
 │  │ • find_free_time           │  │
+│  │ • find_mutual_free_time    │  │
 │  │ • draft_followup_email     │  │
 │  │ • list_providers           │  │
+│  │ • resolve_slack_user       │  │
+│  │ • search_people            │  │
+│  │ • get_preferences          │  │
+│  │ • update_preferences       │  │
+│  │ • create_focus_time        │  │
+│  │ • get_focus_time_stats     │  │
+│  │ • undo_last_change         │  │
 │  └────────────────────────────┘  │
 │                                  │
 │  Tool use loop:                  │
@@ -104,7 +112,7 @@ src/
 │   └── index.ts                 ← Main entry point. Handles all Slack interaction,
 │                                  OAuth callbacks, message routing.
 ├── agent/
-│   ├── anthropic-agent.ts       ← Claude integration. Defines 12 tools as JSON schemas,
+│   ├── anthropic-agent.ts       ← Claude integration. Defines 20 tools as JSON schemas,
 │   │                              runs the tool_use loop, executes tools against providers.
 │   ├── client.ts                ← IAgentClient interface. LocalAgentClient (in-process Claude)
 │   │                              vs RemoteAgentClient (calls AWS Lambda).
@@ -136,7 +144,6 @@ src/
 ├── data-sanitizer.ts            ← Strips HTML, estimates tokens, formats events.
 └── types.ts                     ← Shared types: UserContext, TokenSet, CalendarProviderType.
 
-archive/teams/                   ← Old Teams bot code, preserved for reference.
 scripts/deploy-lambda.sh         ← Builds + zips + deploys to AWS Lambda.
 ```
 

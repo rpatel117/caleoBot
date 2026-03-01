@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { notifier, NotifyEvent } from '../notifications/notify';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -8,6 +9,11 @@ const pool = new Pool({
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
+});
+
+pool.on('error', (err) => {
+  console.error('Unexpected DB pool error:', err);
+  notifier.emit(NotifyEvent.DB_CONNECTION_FAILURE, 'Database pool error', undefined, err);
 });
 
 export default pool;

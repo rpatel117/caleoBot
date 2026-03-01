@@ -17,7 +17,7 @@ export class EncryptionService {
     if (!rawKey || rawKey === 'default-key-change-in-production' || rawKey === 'generate-a-64-char-hex-key') {
       if (process.env.NODE_ENV === 'production') {
         throw new Error('ENCRYPTION_KEY is missing or default — refusing to start in production. Set a 64-char hex string.');
-      }
+1      }
       console.error('ENCRYPTION_KEY is missing or default — encryption will fail. Set a 64-char hex string.');
     }
     // Key must be 32 bytes (64 hex chars)

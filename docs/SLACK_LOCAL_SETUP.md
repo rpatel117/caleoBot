@@ -17,8 +17,11 @@ This project now has a Slack runtime entrypoint at `src/slack/index.ts` that reu
    - Enable events.
    - Add bot events: `app_mention`, `message.im`.
 5. Under **Slash Commands**, create:
-   - `/caleo`
-   - `/caleo-auth`
+   - `/caleo` — Ask Caleo anything
+   - `/caleo-auth` — Connect calendar providers
+   - `/caleo-billing` — Manage billing and add credits
+   - `/caleo-settings` — Configure preferences (work hours, focus time, etc.)
+   - `/caleo-privacy` — View or delete your stored data
 6. Install the app to your workspace.
 
 ## 2) Configure environment
@@ -33,13 +36,14 @@ SLACK_SOCKET_MODE=true
 SLACK_PORT=3000
 ```
 
-Calendar auth still uses Microsoft OAuth callback. Keep:
+Calendar OAuth still uses a browser redirect. Keep:
 
 ```env
 NGROK_URL=https://your-ngrok-subdomain.ngrok-free.app
 MICROSOFT_APP_ID=...
 MICROSOFT_APP_PASSWORD=...
-MICROSOFT_TENANT_ID=...
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
 ```
 
 ## 3) Run locally
@@ -47,7 +51,7 @@ MICROSOFT_TENANT_ID=...
 ```bash
 npm install
 npm run build
-npm run start:slack
+npm start
 ```
 
 If you use Microsoft calendar auth locally, expose port `3000`:
@@ -71,4 +75,4 @@ https://<your-ngrok-url>/auth/callback
 ## Notes
 
 - Socket Mode means Slack events do not require ngrok.
-- ngrok is only needed for the Microsoft OAuth callback while running local.
+- ngrok is only needed for the OAuth callback (Google + Microsoft) while running locally.

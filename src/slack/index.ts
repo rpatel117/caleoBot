@@ -23,6 +23,7 @@ import { verifyAndDecodeState } from '../auth/oauth-state';
 import { RateLimiter } from '../rate-limiter';
 import { createCheckoutSession, constructWebhookEvent } from '../billing/stripe';
 import { verifyCheckoutParams } from '../billing/checkout-signer';
+import { notifier, NotifyEvent } from '../notifications/notify';
 
 const { App, ExpressReceiver } = require('@slack/bolt') as {
   App: any;
@@ -127,6 +128,7 @@ async function buildProviders(dbUserId: string): Promise<Map<CalendarProviderTyp
     }
   } catch (err) {
     console.error('[buildProviders] Failed to load Microsoft provider:', err);
+    notifier.emit(NotifyEvent.PROVIDER_BUILD_FAILURE, `Microsoft provider failed for user ${dbUserId}`, undefined, err instanceof Error ? err : new Error(String(err)));
   }
 
   try {
@@ -144,6 +146,7 @@ async function buildProviders(dbUserId: string): Promise<Map<CalendarProviderTyp
     }
   } catch (err) {
     console.error('[buildProviders] Failed to load Google provider:', err);
+    notifier.emit(NotifyEvent.PROVIDER_BUILD_FAILURE, `Google provider failed for user ${dbUserId}`, undefined, err instanceof Error ? err : new Error(String(err)));
   }
 
   console.log(`[buildProviders] Active providers: [${Array.from(providers.keys()).join(', ') || 'none'}]`);
@@ -369,6 +372,7 @@ const httpServer = http.createServer(async (req, res) => {
       );
 
       const providerName = provider === 'google' ? 'Google Calendar' : 'Microsoft Outlook';
+      notifier.emit(NotifyEvent.NEW_USER_SIGNUP, `${providerName} connected`, `slackUser=${slackUserId}, workspace=${workspaceId}`);
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(`<html><body style="font-family:sans-serif;text-align:center;padding:40px">
         <h2>Connected to ${providerName}!</h2>
@@ -376,6 +380,7 @@ const httpServer = http.createServer(async (req, res) => {
       </body></html>`);
     } catch (error) {
       console.error('OAuth callback error:', error);
+      notifier.emit(NotifyEvent.OAUTH_CALLBACK_FAILURE, 'OAuth callback failed', undefined, error instanceof Error ? error : new Error(String(error)));
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         success: false,
@@ -457,6 +462,7 @@ const httpServer = http.createServer(async (req, res) => {
           if (credited) {
             const balance = await repository.getBalance(eventDbUserId);
             console.log(`[Stripe] Credited ${(amountCents / 100).toFixed(2)} to ${eventDbUserId}. Balance: ${(balance.balance_cents / 100).toFixed(2)}`);
+            notifier.emit(NotifyEvent.BILLING_PAYMENT, `$${(amountCents / 100).toFixed(2)} payment received`, `user=${eventDbUserId}, newBalance=$${(balance.balance_cents / 100).toFixed(2)}`);
           }
         }
       }
@@ -465,6 +471,7 @@ const httpServer = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ received: true }));
     } catch (error) {
       console.error('Stripe webhook error:', error);
+      notifier.emit(NotifyEvent.STRIPE_WEBHOOK_ERROR, 'Stripe webhook failed', undefined, error instanceof Error ? error : new Error(String(error)));
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Webhook verification failed' }));
     }
@@ -537,6 +544,7 @@ async function processUserMessage(args: {
   // --- Rate limiting (before any DB lookups) ---
   const rateCheck = messageRateLimiter.check(args.userId);
   if (!rateCheck.allowed) {
+    notifier.emit(NotifyEvent.RATE_LIMIT_HIT, `Rate limit hit by user ${args.userId}`, `channel=${args.channel}`);
     const waitSec = Math.ceil(rateCheck.retryAfterMs / 1000);
     await args.client.chat.postMessage({
       channel: args.channel,
@@ -822,6 +830,7 @@ app.command('/caleo', async ({ command, ack, client, body }: any) => {
     });
   } catch (error) {
     console.error('/caleo command error:', error);
+    notifier.emit(NotifyEvent.UNHANDLED_ERROR, '/caleo command error', `user=${command.user_id}`, error instanceof Error ? error : new Error(String(error)));
     await client.chat.postMessage({
       channel: command.channel_id,
       text: `Sorry, something went wrong: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -1294,6 +1303,7 @@ app.event('app_mention', async ({ event, body, client }: any) => {
     });
   } catch (error) {
     console.error(`[app_mention] Unhandled error for event ${eventId}:`, error);
+    notifier.emit(NotifyEvent.UNHANDLED_ERROR, `app_mention error (${eventId})`, undefined, error instanceof Error ? error : new Error(String(error)));
   }
 });
 
@@ -1317,11 +1327,13 @@ app.event('message', async ({ event, body, client }: any) => {
     });
   } catch (error) {
     console.error(`[message] Unhandled error for event ${eventId}:`, error);
+    notifier.emit(NotifyEvent.UNHANDLED_ERROR, `DM message error (${eventId})`, undefined, error instanceof Error ? error : new Error(String(error)));
   }
 });
 
 app.error((error: any) => {
   console.error('Slack app error:', error);
+  notifier.emit(NotifyEvent.UNHANDLED_ERROR, 'Slack app error', undefined, error instanceof Error ? error : new Error(String(error)));
 });
 
 // Ambient service instances (created after app.start so we have the slack client)
@@ -1334,6 +1346,9 @@ async function start(): Promise<void> {
     console.log(`HTTP server on port ${httpPort} (health check + OAuth callback)`);
   });
   httpServer.setTimeout(30000); // 30s request timeout
+
+  // Start notification service
+  await notifier.start();
 
   // Start the Slack app (Socket Mode connects via WebSocket, not the HTTP port)
   await app.start();
@@ -1355,6 +1370,7 @@ async function start(): Promise<void> {
 // Graceful shutdown for ECS SIGTERM
 function shutdown(signal: string) {
   console.log(`${signal} received — shutting down gracefully...`);
+  notifier.stop();
   statusSyncService?.stop();
   dailyBriefingService?.stop();
   httpServer.close(() => console.log('HTTP server closed'));
@@ -1366,5 +1382,6 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 
 start().catch((error) => {
   console.error('Failed to start Slack bot:', error);
+  notifier.emit(NotifyEvent.BOT_STARTUP_FAILURE, 'Bot failed to start', undefined, error instanceof Error ? error : new Error(String(error)));
   process.exit(1);
 });
