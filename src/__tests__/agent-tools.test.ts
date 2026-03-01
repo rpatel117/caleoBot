@@ -669,6 +669,130 @@ describe('Agent Tool Execution', () => {
     });
   });
 
+  describe('search_people title matching and self-exclusion', () => {
+    test('title match finds attendee when name/email do not match (Rushi/Siva scenario)', async () => {
+      const ctx = makeContext();
+      const calendar = ctx.providers.get('google')!.calendar!;
+
+      // pachasx2@gmail.com has no "siva" in name or email, but the meeting title contains "Siva"
+      (calendar.getEvents as jest.Mock).mockResolvedValue([
+        {
+          id: 'past-evt-title',
+          subject: 'Rushi/Siva',
+          start: { dateTime: '2026-02-17T10:00:00Z' },
+          end: { dateTime: '2026-02-17T11:00:00Z' },
+          attendees: [
+            { emailAddress: { name: 'Rushi Patel', address: 'rushi@example.com' }, type: 'required' },
+            { emailAddress: { name: '', address: 'pachasx2@gmail.com' }, type: 'required' },
+          ],
+        },
+      ]);
+
+      const result = await executeTool('search_people', { query: 'Siva' }, ctx);
+
+      // Should find pachasx2@gmail.com via title match (name/email don't contain "siva")
+      const emails = result.results.map((r: any) => r.email);
+      expect(emails).toContain('pachasx2@gmail.com');
+      // The title-match result should have source calendar_history_title_match
+      const titleResult = result.results.find((r: any) => r.email === 'pachasx2@gmail.com');
+      expect(titleResult.source).toBe('calendar_history_title_match');
+    });
+
+    test('self-exclusion: user own email never returned from calendar history or title match', async () => {
+      const ctx = makeContext(); // user email is test@example.com
+      const calendar = ctx.providers.get('google')!.calendar!;
+
+      (calendar.getEvents as jest.Mock).mockResolvedValue([
+        {
+          id: 'evt-self',
+          subject: 'Test Meeting',
+          start: { dateTime: '2026-02-17T10:00:00Z' },
+          end: { dateTime: '2026-02-17T11:00:00Z' },
+          attendees: [
+            { emailAddress: { name: 'Test User', address: 'test@example.com' }, type: 'required' },
+            { emailAddress: { name: 'Other Person', address: 'other@example.com' }, type: 'required' },
+          ],
+        },
+      ]);
+
+      const result = await executeTool('search_people', { query: 'Test' }, ctx);
+
+      // User's own email should be excluded
+      const emails = result.results.map((r: any) => r.email);
+      expect(emails).not.toContain('test@example.com');
+      // Other attendee should still be found
+      expect(emails).toContain('other@example.com');
+    });
+
+    test('large meeting skipped for title matching (>5 attendees)', async () => {
+      const ctx = makeContext();
+      const calendar = ctx.providers.get('google')!.calendar!;
+
+      const manyAttendees = Array.from({ length: 8 }, (_, i) => ({
+        emailAddress: { name: `Person ${i}`, address: `person${i}@example.com` },
+        type: 'required',
+      }));
+
+      (calendar.getEvents as jest.Mock).mockResolvedValue([
+        {
+          id: 'big-meeting',
+          subject: 'Siva Team Standup',
+          start: { dateTime: '2026-02-17T10:00:00Z' },
+          end: { dateTime: '2026-02-17T11:00:00Z' },
+          attendees: manyAttendees,
+        },
+      ]);
+
+      const result = await executeTool('search_people', { query: 'Siva' }, ctx);
+
+      // No results — name/email don't match "Siva", and title match is skipped for >5 attendees
+      expect(result.results.length).toBe(0);
+    });
+
+    test('searchSummary is present in result', async () => {
+      const ctx = makeContext();
+      const result = await executeTool('search_people', { query: 'Nobody' }, ctx);
+
+      expect(result.searchSummary).toBeDefined();
+      expect(typeof result.searchSummary).toBe('string');
+      expect(result.searchSummary).toContain('Searched:');
+      expect(result.searchSummary).toContain('calendar history');
+    });
+
+    test('direct name match wins dedup over title match for same email', async () => {
+      const ctx = makeContext();
+      const calendar = ctx.providers.get('google')!.calendar!;
+
+      (calendar.getEvents as jest.Mock).mockResolvedValue([
+        {
+          id: 'evt-name-match',
+          subject: 'Regular Meeting',
+          start: { dateTime: '2026-02-17T10:00:00Z' },
+          end: { dateTime: '2026-02-17T11:00:00Z' },
+          attendees: [
+            { emailAddress: { name: 'Siva Kumar', address: 'siva@example.com' }, type: 'required' },
+          ],
+        },
+        {
+          id: 'evt-title-match',
+          subject: 'Rushi/Siva',
+          start: { dateTime: '2026-02-18T10:00:00Z' },
+          end: { dateTime: '2026-02-18T11:00:00Z' },
+          attendees: [
+            { emailAddress: { name: 'Siva Kumar', address: 'siva@example.com' }, type: 'required' },
+          ],
+        },
+      ]);
+
+      const result = await executeTool('search_people', { query: 'Siva' }, ctx);
+
+      // Name match runs first, so dedup should prefer calendar_history over calendar_history_title_match
+      const sivaResults = result.results.filter((r: any) => r.email === 'siva@example.com');
+      expect(sivaResults.length).toBe(1);
+      expect(sivaResults[0].source).toBe('calendar_history');
+    });
+  });
+
   describe('meeting limit enforcement', () => {
     test('blocks create when free plan limit reached', async () => {
       const ctx = makeContext({ userType: 'member' });

@@ -27,6 +27,10 @@ describe('Agent Config', () => {
     test('people search lookback is 90 days', () => {
       expect(AGENT_CONFIG.peopleSearchLookbackDays).toBe(90);
     });
+
+    test('title match max attendees is 5', () => {
+      expect(AGENT_CONFIG.titleMatchMaxAttendees).toBe(5);
+    });
   });
 
   describe('buildSystemPrompt', () => {
@@ -268,9 +272,9 @@ describe('Agent Config', () => {
 
     test('prompt is not excessively long (cost control)', () => {
       const prompt = buildSystemPrompt(baseCtx);
-      // Base prompt grew with Focus Time, Impact Scoring, Recurring, Undo, Production Behavior, Event Status Intelligence sections
-      // Should still stay under ~8500 chars to keep input tokens reasonable
-      expect(prompt.length).toBeLessThan(8500);
+      // Base prompt grew with Focus Time, Impact Scoring, Recurring, Undo, Production Behavior, Event Status Intelligence, title matching sections
+      // Should still stay under ~9000 chars to keep input tokens reasonable
+      expect(prompt.length).toBeLessThan(9000);
     });
 
     test('heavy week message for >15 events', () => {

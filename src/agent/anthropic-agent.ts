@@ -233,7 +233,7 @@ const toolDefinitions: Anthropic.Tool[] = [
   },
   {
     name: 'search_people',
-    description: 'Search for people by name across the Slack workspace directory, the organization\'s calendar provider directory (Google/Microsoft), saved contacts, email history (people the user has communicated with), and recent calendar event attendees (last 90 days). All sources are always checked and results are merged. Use this when the user refers to someone by plain name (e.g. "Kunal", "Sarah from marketing", "my client John") instead of an @mention. Results are deduplicated and ranked by relevance. Returns name and email for each match. IMPORTANT: Only display the exact results returned by this tool. Never fabricate or guess names/emails if the tool returns an error or empty results.',
+    description: 'Search for people by name across the Slack workspace directory, the organization\'s calendar provider directory (Google/Microsoft), saved contacts, email history (people the user has communicated with), and recent calendar event attendees (last 90 days). Also matches meeting titles — if the query appears in a meeting subject (for small meetings ≤5 attendees), attendees from that meeting are included. All sources are always checked and results are merged. Use this when the user refers to someone by plain name (e.g. "Kunal", "Sarah from marketing", "my client John") instead of an @mention. Results are deduplicated and ranked by relevance. Returns name, email, and searchSummary for each query. IMPORTANT: Only display the exact results returned by this tool. Never fabricate or guess names/emails if the tool returns an error or empty results.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -1008,6 +1008,8 @@ export class AnthropicAgent {
       case 'search_people': {
         const allResults: Array<{ name: string; email: string; source: string }> = [];
         const errors: string[] = [];
+        const searchedSources: string[] = [];
+        const userEmail = (context.userContext.email || '').toLowerCase();
 
         console.log(`[search_people] Query: "${input.query}", slackClient: ${!!context.slackClient}, provider: ${this.getProvider(context, input.provider)?.providerType || 'none'}`);
 
@@ -1021,6 +1023,7 @@ export class AnthropicAgent {
             } else if (provider.providerType === 'google') {
               providerResults = await this.searchPeopleGoogle(provider.accessToken, input.query);
             }
+            searchedSources.push(provider.providerType === 'google' ? 'Google directory' : 'Microsoft directory');
             console.log(`[search_people] ${provider.providerType} returned ${providerResults?.results?.length || 0} result(s)`);
             if (providerResults?.results) {
               for (const r of providerResults.results) {
@@ -1043,6 +1046,7 @@ export class AnthropicAgent {
         if (context.slackClient) {
           try {
             const slackResults = await this.searchPeopleSlack(context.slackClient, input.query);
+            searchedSources.push('Slack workspace');
             console.log(`[search_people] Slack returned ${slackResults?.results?.length || 0} result(s)`);
             if (slackResults?.results) {
               for (const r of slackResults.results) {
@@ -1060,6 +1064,7 @@ export class AnthropicAgent {
         if (context.crossOrgService) {
           try {
             const caleoResults = await repository.searchUsersByName(input.query);
+            searchedSources.push('Caleo user database');
             console.log(`[search_people] Caleo DB returned ${caleoResults.length} result(s)`);
             for (const r of caleoResults) {
               if (r.email) {
@@ -1072,6 +1077,8 @@ export class AnthropicAgent {
         }
 
         // 4. Search recent calendar event attendees (always — supplements other sources)
+        let nameMatchCount = 0;
+        let titleMatchCount = 0;
         if (provider?.calendar && provider.accessToken) {
           try {
             const now = new Date();
@@ -1079,28 +1086,50 @@ export class AnthropicAgent {
             const lookbackDate = new Date(now.getTime() - lookbackMs);
             const recentEvents = await provider.calendar.getEvents(provider.accessToken, lookbackDate, now);
             const queryLower = input.query.toLowerCase();
-            let calendarHistoryCount = 0;
+
+            // 4a. Name/email matching on attendees (with self-exclusion)
             for (const event of recentEvents) {
               for (const attendee of (event.attendees || [])) {
-                const name = (attendee.emailAddress.name || '').toLowerCase();
                 const email = (attendee.emailAddress.address || '').toLowerCase();
+                if (email === userEmail) continue; // Self-exclusion
+                const name = (attendee.emailAddress.name || '').toLowerCase();
                 if (name.includes(queryLower) || email.includes(queryLower)) {
                   allResults.push({
                     name: attendee.emailAddress.name || attendee.emailAddress.address,
                     email: attendee.emailAddress.address,
                     source: 'calendar_history',
                   });
-                  calendarHistoryCount++;
+                  nameMatchCount++;
                 }
               }
             }
-            console.log(`[search_people] Calendar history (${AGENT_CONFIG.peopleSearchLookbackDays}d) returned ${calendarHistoryCount} result(s)`);
+
+            // 4b. Title matching — if query appears in meeting subject, include attendees from small meetings
+            for (const event of recentEvents) {
+              const subject = (event.subject || '').toLowerCase();
+              const attendees = event.attendees || [];
+              if (!subject.includes(queryLower)) continue;
+              if (attendees.length > AGENT_CONFIG.titleMatchMaxAttendees) continue;
+              for (const attendee of attendees) {
+                const email = (attendee.emailAddress.address || '').toLowerCase();
+                if (email === userEmail) continue; // Self-exclusion
+                allResults.push({
+                  name: attendee.emailAddress.name || attendee.emailAddress.address,
+                  email: attendee.emailAddress.address,
+                  source: 'calendar_history_title_match',
+                });
+                titleMatchCount++;
+              }
+            }
+
+            searchedSources.push(`${AGENT_CONFIG.peopleSearchLookbackDays}-day calendar history (attendees and meeting titles)`);
+            console.log(`[search_people] Calendar history (${AGENT_CONFIG.peopleSearchLookbackDays}d): ${nameMatchCount} name match(es), ${titleMatchCount} title match(es)`);
           } catch (error: any) {
             console.error('[search_people] Calendar history search failed:', error?.message);
           }
         }
 
-        // 5. Deduplicate by email (prefer calendar provider over Slack over Caleo)
+        // 5. Deduplicate by email (prefer calendar provider over Slack over Caleo over calendar_history over title_match)
         const seen = new Set<string>();
         const deduped: Array<{ name: string; email: string; source: string }> = [];
         for (const r of allResults) {
@@ -1113,8 +1142,14 @@ export class AnthropicAgent {
 
         console.log(`[search_people] Final: ${deduped.length} deduped result(s) from ${allResults.length} total`);
 
+        // Build searchSummary
+        const searchSummary = `Searched: ${searchedSources.join(', ')}. Found ${deduped.length} result(s)` +
+          (nameMatchCount > 0 ? `, ${nameMatchCount} from attendee name/email match` : '') +
+          (titleMatchCount > 0 ? `, ${titleMatchCount} from meeting title match` : '') +
+          '.';
+
         // Always include permission hints so the agent can inform the user
-        const result: any = { results: deduped.slice(0, 5) };
+        const result: any = { results: deduped.slice(0, 5), searchSummary };
         if (errors.length > 0) {
           result.note = errors.join('; ');
         }
