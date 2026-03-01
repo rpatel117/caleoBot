@@ -16,6 +16,9 @@ export interface FormattedCalendarSnapshot {
   end: string;
   attendees: string[];
   hasVideoLink: boolean;
+  isRecurring?: boolean;
+  status?: 'cancelled' | 'tentative';
+  selfResponse?: 'declined' | 'tentative' | 'needsAction';
 }
 
 export interface UserPreferences {
@@ -48,6 +51,16 @@ export interface DynamicPromptContext {
   preferences?: UserPreferences;
   billingContext?: { balanceCents: number; isLow: boolean };
   slackThreadUrl?: string;
+}
+
+function buildEventTags(e: FormattedCalendarSnapshot): string {
+  const tags: string[] = [];
+  if (e.isRecurring) tags.push('[recurring]');
+  if (e.status === 'cancelled') tags.push('[cancelled]');
+  if (e.selfResponse === 'declined') tags.push('[you declined]');
+  else if (e.selfResponse === 'tentative') tags.push('[tentative]');
+  else if (e.selfResponse === 'needsAction') tags.push('[needs response]');
+  return tags.length > 0 ? ' ' + tags.join(' ') : '';
 }
 
 // ---------- Build the dynamic system prompt ----------
@@ -83,6 +96,7 @@ export function buildSystemPrompt(ctx: DynamicPromptContext): string {
           }
         }
         if (e.hasVideoLink) line += ' [video]';
+        line += buildEventTags(e);
         return line;
       });
       return `  ${day.label.toUpperCase()} (${day.dateStr}): ${day.events.length} event(s)\n${eventLines.join('\n')}`;
@@ -99,6 +113,7 @@ export function buildSystemPrompt(ctx: DynamicPromptContext): string {
         }
       }
       if (e.hasVideoLink) line += ' [video]';
+      line += buildEventTags(e);
       return line;
     });
     sections.push(`TODAY'S SCHEDULE (${ctx.todayEvents.length} events — already loaded):\n${eventLines.join('\n')}`);
@@ -138,7 +153,7 @@ When the user mentions ANY person (by name, @mention, or description), you MUST 
 - Plain name (e.g. "Kunal", "Sarah", "my manager") → call search_people IMMEDIATELY
   • Single match: "I found *Full Name* (email) — is that right?"
   • Multiple matches: numbered list, ask user to pick
-  • Zero matches: check the pre-loaded calendar context above for a matching attendee name — if found, use that email. Otherwise, call get_calendar_events for a wider date range and look for matching attendee names/emails in the results. Only ask the user for an email if no match is found anywhere.
+  • Zero matches: search_people already checks recent calendar attendees (last 30 days). If still not found, check the pre-loaded calendar context above for a matching attendee name. If the user mentions a specific past meeting, call get_calendar_events for that date and scan the attendee list. Only ask for the email if no match is found anywhere.
   • Error or "note" field: relay the message to the user (e.g. permission updates needed via /caleo-auth)
 - NEVER skip calling search_people. NEVER guess emails. NEVER ask for the email without searching first.
 - If search_people returns a "note" about permissions, include it in your response so the user knows how to enable full directory search.
@@ -194,6 +209,12 @@ CALENDAR INTELLIGENCE:
 - Proactively warn about back-to-back meetings (no buffer).
 - If this week has ${ctx.weekEventCount > 15 ? 'a lot of' : ''} events, mention if it looks like a heavy week.
 - Suggest optimal times based on free slots when scheduling.
+
+EVENT STATUS INTELLIGENCE:
+- Refer to recurring meetings naturally (e.g. "your recurring standup" not just "standup").
+- When summarizing a day, give audit counts (e.g. "5 meetings — 1 cancelled, 1 declined, 3 confirmed").
+- Proactively note unresponded invites marked [needs response].
+- Exclude cancelled and declined events from meeting time totals and free-time calculations.
 
 FOCUS TIME:
 - When user asks for focus time, use create_focus_time tool.

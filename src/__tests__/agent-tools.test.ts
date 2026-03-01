@@ -540,6 +540,92 @@ describe('Agent Tool Execution', () => {
     });
   });
 
+  describe('search_people calendar history fallback', () => {
+    test('searches calendar event attendees when other sources find nothing', async () => {
+      const ctx = makeContext();
+      const calendar = ctx.providers.get('google')!.calendar!;
+
+      // Mock getEvents to return past events with attendees
+      (calendar.getEvents as jest.Mock).mockResolvedValue([
+        {
+          id: 'past-evt-1',
+          subject: 'Rushi/Siva',
+          start: { dateTime: '2026-02-17T10:00:00Z' },
+          end: { dateTime: '2026-02-17T11:00:00Z' },
+          attendees: [
+            { emailAddress: { name: 'Siva Kumar', address: 'siva@example.com' }, type: 'required' },
+            { emailAddress: { name: 'Rushi Patel', address: 'rushi@example.com' }, type: 'required' },
+          ],
+        },
+      ]);
+
+      const result = await executeTool('search_people', { query: 'Siva' }, ctx);
+
+      expect(result.results.length).toBeGreaterThanOrEqual(1);
+      expect(result.results[0].email).toBe('siva@example.com');
+      expect(result.results[0].name).toBe('Siva Kumar');
+      expect(result.results[0].source).toBe('calendar_history');
+    });
+
+    test('does not search calendar history when other sources return results', async () => {
+      const ctx = makeContext({
+        slackClient: {
+          users: {
+            list: jest.fn().mockResolvedValue({
+              members: [
+                { real_name: 'Siva Slack', profile: { display_name: 'siva', email: 'siva@slack.com' }, deleted: false, is_bot: false, id: 'U999' },
+              ],
+            }),
+          },
+        },
+      });
+      const calendar = ctx.providers.get('google')!.calendar!;
+
+      const result = await executeTool('search_people', { query: 'Siva' }, ctx);
+
+      // Should find Siva from Slack, should NOT call getEvents for calendar history
+      expect(result.results.length).toBeGreaterThanOrEqual(1);
+      expect(result.results[0].source).toBe('slack');
+      expect(calendar.getEvents).not.toHaveBeenCalled();
+    });
+
+    test('deduplicates calendar history results by email', async () => {
+      const ctx = makeContext();
+      const calendar = ctx.providers.get('google')!.calendar!;
+
+      // Return multiple events with the same attendee
+      (calendar.getEvents as jest.Mock).mockResolvedValue([
+        {
+          id: 'evt-1', subject: 'Meeting 1',
+          start: { dateTime: '2026-02-17T10:00:00Z' }, end: { dateTime: '2026-02-17T11:00:00Z' },
+          attendees: [{ emailAddress: { name: 'Siva Kumar', address: 'siva@example.com' }, type: 'required' }],
+        },
+        {
+          id: 'evt-2', subject: 'Meeting 2',
+          start: { dateTime: '2026-02-18T10:00:00Z' }, end: { dateTime: '2026-02-18T11:00:00Z' },
+          attendees: [{ emailAddress: { name: 'Siva Kumar', address: 'siva@example.com' }, type: 'required' }],
+        },
+      ]);
+
+      const result = await executeTool('search_people', { query: 'Siva' }, ctx);
+
+      // Should be deduplicated to 1 result
+      expect(result.results.length).toBe(1);
+      expect(result.results[0].email).toBe('siva@example.com');
+    });
+
+    test('handles calendar history search failure gracefully', async () => {
+      const ctx = makeContext();
+      const calendar = ctx.providers.get('google')!.calendar!;
+      (calendar.getEvents as jest.Mock).mockRejectedValue(new Error('API timeout'));
+
+      const result = await executeTool('search_people', { query: 'Unknown' }, ctx);
+
+      // Should return empty results without throwing
+      expect(result.results).toEqual([]);
+    });
+  });
+
   describe('meeting limit enforcement', () => {
     test('blocks create when free plan limit reached', async () => {
       const ctx = makeContext({ userType: 'member' });
