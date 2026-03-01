@@ -233,7 +233,7 @@ const toolDefinitions: Anthropic.Tool[] = [
   },
   {
     name: 'search_people',
-    description: 'Search for people by name across the Slack workspace directory, the organization\'s calendar provider directory (Google/Microsoft), saved contacts, email history (people the user has communicated with), and recent calendar event attendees (last 30 days). Use this when the user refers to someone by plain name (e.g. "Kunal", "Sarah from marketing", "my client John") instead of an @mention. Results are deduplicated and ranked by relevance. Returns name and email for each match. IMPORTANT: Only display the exact results returned by this tool. Never fabricate or guess names/emails if the tool returns an error or empty results.',
+    description: 'Search for people by name across the Slack workspace directory, the organization\'s calendar provider directory (Google/Microsoft), saved contacts, email history (people the user has communicated with), and recent calendar event attendees (last 90 days). All sources are always checked and results are merged. Use this when the user refers to someone by plain name (e.g. "Kunal", "Sarah from marketing", "my client John") instead of an @mention. Results are deduplicated and ranked by relevance. Returns name and email for each match. IMPORTANT: Only display the exact results returned by this tool. Never fabricate or guess names/emails if the tool returns an error or empty results.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -1071,13 +1071,15 @@ export class AnthropicAgent {
           }
         }
 
-        // 4. Search recent calendar event attendees (fallback when other sources find nothing)
-        if (allResults.length === 0 && provider?.calendar && provider.accessToken) {
+        // 4. Search recent calendar event attendees (always — supplements other sources)
+        if (provider?.calendar && provider.accessToken) {
           try {
             const now = new Date();
-            const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60_000);
-            const recentEvents = await provider.calendar.getEvents(provider.accessToken, thirtyDaysAgo, now);
+            const lookbackMs = AGENT_CONFIG.peopleSearchLookbackDays * 24 * 60 * 60_000;
+            const lookbackDate = new Date(now.getTime() - lookbackMs);
+            const recentEvents = await provider.calendar.getEvents(provider.accessToken, lookbackDate, now);
             const queryLower = input.query.toLowerCase();
+            let calendarHistoryCount = 0;
             for (const event of recentEvents) {
               for (const attendee of (event.attendees || [])) {
                 const name = (attendee.emailAddress.name || '').toLowerCase();
@@ -1088,10 +1090,11 @@ export class AnthropicAgent {
                     email: attendee.emailAddress.address,
                     source: 'calendar_history',
                   });
+                  calendarHistoryCount++;
                 }
               }
             }
-            console.log(`[search_people] Calendar history returned ${allResults.length} result(s)`);
+            console.log(`[search_people] Calendar history (${AGENT_CONFIG.peopleSearchLookbackDays}d) returned ${calendarHistoryCount} result(s)`);
           } catch (error: any) {
             console.error('[search_people] Calendar history search failed:', error?.message);
           }

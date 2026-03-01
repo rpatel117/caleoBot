@@ -567,7 +567,7 @@ describe('Agent Tool Execution', () => {
       expect(result.results[0].source).toBe('calendar_history');
     });
 
-    test('does not search calendar history when other sources return results', async () => {
+    test('always searches calendar history even when other sources return results', async () => {
       const ctx = makeContext({
         slackClient: {
           users: {
@@ -580,13 +580,56 @@ describe('Agent Tool Execution', () => {
         },
       });
       const calendar = ctx.providers.get('google')!.calendar!;
+      (calendar.getEvents as jest.Mock).mockResolvedValue([
+        {
+          id: 'past-evt-1', subject: 'Rushi/Siva',
+          start: { dateTime: '2026-01-10T10:00:00Z' }, end: { dateTime: '2026-01-10T11:00:00Z' },
+          attendees: [
+            { emailAddress: { name: 'Siva Kumar', address: 'siva@example.com' }, type: 'required' },
+          ],
+        },
+      ]);
 
       const result = await executeTool('search_people', { query: 'Siva' }, ctx);
 
-      // Should find Siva from Slack, should NOT call getEvents for calendar history
-      expect(result.results.length).toBeGreaterThanOrEqual(1);
-      expect(result.results[0].source).toBe('slack');
-      expect(calendar.getEvents).not.toHaveBeenCalled();
+      // Should call getEvents for calendar history even though Slack returned results
+      expect(calendar.getEvents).toHaveBeenCalled();
+      // Should have results from both Slack and calendar_history
+      expect(result.results.length).toBeGreaterThanOrEqual(2);
+      const sources = result.results.map((r: any) => r.source);
+      expect(sources).toContain('slack');
+      expect(sources).toContain('calendar_history');
+    });
+
+    test('dedup priority: Slack wins over calendar_history for same email', async () => {
+      const ctx = makeContext({
+        slackClient: {
+          users: {
+            list: jest.fn().mockResolvedValue({
+              members: [
+                { real_name: 'Siva Kumar', profile: { display_name: 'siva', email: 'siva@example.com' }, deleted: false, is_bot: false, id: 'U999' },
+              ],
+            }),
+          },
+        },
+      });
+      const calendar = ctx.providers.get('google')!.calendar!;
+      (calendar.getEvents as jest.Mock).mockResolvedValue([
+        {
+          id: 'past-evt-1', subject: 'Meeting',
+          start: { dateTime: '2026-01-10T10:00:00Z' }, end: { dateTime: '2026-01-10T11:00:00Z' },
+          attendees: [
+            { emailAddress: { name: 'Siva Kumar', address: 'siva@example.com' }, type: 'required' },
+          ],
+        },
+      ]);
+
+      const result = await executeTool('search_people', { query: 'Siva' }, ctx);
+
+      // Same email from both sources — should be deduped to 1 result, Slack wins (appears first)
+      const sivaResults = result.results.filter((r: any) => r.email === 'siva@example.com');
+      expect(sivaResults.length).toBe(1);
+      expect(sivaResults[0].source).toBe('slack');
     });
 
     test('deduplicates calendar history results by email', async () => {

@@ -10,7 +10,7 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
   async getEvents(accessToken: string, start: Date, end: Date): Promise<CalendarEvent[]> {
     const startParam = encodeURIComponent(start.toISOString());
     const endParam = encodeURIComponent(end.toISOString());
-    const url = `${BASE_URL}/me/calendar/events?startDateTime=${startParam}&endDateTime=${endParam}`;
+    const url = `${BASE_URL}/me/calendar/events?startDateTime=${startParam}&endDateTime=${endParam}&$top=500&$orderby=start/dateTime`;
 
     const response = await fetch(url, {
       headers: {

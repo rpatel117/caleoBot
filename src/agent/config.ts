@@ -5,7 +5,8 @@ export const AGENT_CONFIG = {
   temperature: 0.7,
   maxConversationLength: 20,
   sessionTimeoutMinutes: 30,
-  dmSessionTimeoutMinutes: 5
+  dmSessionTimeoutMinutes: 5,
+  peopleSearchLookbackDays: 90
 };
 
 // ---------- Dynamic prompt types ----------
@@ -154,7 +155,7 @@ When the user mentions ANY person (by name, @mention, or description), you MUST 
 - Plain name (e.g. "Kunal", "Sarah", "my manager") → call search_people IMMEDIATELY
   • Single match: "I found *Full Name* (email) — is that right?"
   • Multiple matches: numbered list, ask user to pick
-  • Zero matches: search_people already checks recent calendar attendees (last 30 days). If still not found, check the pre-loaded calendar context above for a matching attendee name. If the user mentions a specific past meeting, call get_calendar_events for that date and scan the attendee list. Only ask for the email if no match is found anywhere.
+  • Zero matches: search_people already checks recent calendar attendees (last 90 days). If still not found, check the pre-loaded calendar context above for a matching attendee name. If the user mentions a specific past meeting, call get_calendar_events for that date and scan the attendee list. Only ask for the email if no match is found anywhere.
   • Error or "note" field: relay the message to the user (e.g. permission updates needed via /caleo-auth)
 - NEVER skip calling search_people. NEVER guess emails. NEVER ask for the email without searching first.
 - If search_people returns a "note" about permissions, include it in your response so the user knows how to enable full directory search.

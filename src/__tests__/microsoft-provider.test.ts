@@ -312,6 +312,19 @@ describe('MicrosoftCalendarProvider', () => {
       expect(url).toContain('endDateTime=');
     });
 
+    test('includes $top=500 and $orderby in URL', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ value: [] }),
+      });
+
+      await provider.getEvents(accessToken, new Date('2026-03-01'), new Date('2026-03-07'));
+
+      const url = mockFetch.mock.calls[0][0];
+      expect(url).toContain('$top=500');
+      expect(url).toContain('$orderby=start/dateTime');
+    });
+
     test('maps response to CalendarEvent format', async () => {
       mockFetch.mockResolvedValue({
         ok: true,

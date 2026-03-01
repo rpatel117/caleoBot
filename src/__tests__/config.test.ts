@@ -23,6 +23,10 @@ describe('Agent Config', () => {
     test('conversation length is capped', () => {
       expect(AGENT_CONFIG.maxConversationLength).toBe(20);
     });
+
+    test('people search lookback is 90 days', () => {
+      expect(AGENT_CONFIG.peopleSearchLookbackDays).toBe(90);
+    });
   });
 
   describe('buildSystemPrompt', () => {
