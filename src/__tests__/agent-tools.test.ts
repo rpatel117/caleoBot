@@ -10,6 +10,8 @@ jest.mock('../database/client', () => ({
 }));
 
 jest.mock('../database/repository', () => {
+  // In-memory undo store for tests to simulate DB behavior
+  let undoStore: Record<string, any> = {};
   const mockRepo = {
     getPreferences: jest.fn().mockResolvedValue({
       work_hours_start: '09:00',
@@ -25,6 +27,16 @@ jest.mock('../database/repository', () => {
     logAction: jest.fn().mockResolvedValue({}),
     getWorkspacePlan: jest.fn().mockResolvedValue('pro'),
     getMonthlyUsage: jest.fn().mockResolvedValue({ meetingsCreated: 0 }),
+    saveUndoState: jest.fn().mockImplementation(async (userId: string, channelId: string, state: any) => {
+      undoStore[`${userId}:${channelId}`] = state;
+    }),
+    getUndoState: jest.fn().mockImplementation(async (userId: string, channelId: string) => {
+      return undoStore[`${userId}:${channelId}`] || null;
+    }),
+    clearUndoState: jest.fn().mockImplementation(async (userId: string, channelId: string) => {
+      delete undoStore[`${userId}:${channelId}`];
+    }),
+    _resetUndoStore: () => { undoStore = {}; },
   };
   return {
     repository: mockRepo,
@@ -104,6 +116,8 @@ describe('Agent Tool Execution', () => {
     process.env.ANTHROPIC_API_KEY = 'test-key';
     agent = new AnthropicAgent();
     jest.clearAllMocks();
+    // Reset the in-memory undo store used by mock repository
+    (repository as any)._resetUndoStore();
   });
 
   // Access private executeTool via prototype
@@ -235,6 +249,8 @@ describe('Agent Tool Execution', () => {
         startTime: '2026-03-02T09:00:00',
         endTime: '2026-03-02T10:00:00',
       }, ctx);
+      // Allow fire-and-forget saveUndoState to settle
+      await new Promise(resolve => setTimeout(resolve, 10));
 
       // Now undo
       const result = await executeTool('undo_last_change', {}, ctx);
@@ -262,6 +278,7 @@ describe('Agent Tool Execution', () => {
         meetingId: 'evt-to-update',
         subject: 'New Title',
       }, ctx);
+      await new Promise(resolve => setTimeout(resolve, 10));
 
       // Undo
       const result = await executeTool('undo_last_change', {}, ctx);
@@ -284,6 +301,7 @@ describe('Agent Tool Execution', () => {
 
       // Delete the meeting
       await executeTool('delete_meeting', { meetingId: 'evt-to-delete' }, ctx);
+      await new Promise(resolve => setTimeout(resolve, 10));
 
       // Undo
       const result = await executeTool('undo_last_change', {}, ctx);
@@ -310,6 +328,7 @@ describe('Agent Tool Execution', () => {
       await executeTool('create_meeting', {
         subject: 'Test', startTime: '2026-03-02T09:00:00', endTime: '2026-03-02T10:00:00',
       }, ctx);
+      await new Promise(resolve => setTimeout(resolve, 10));
 
       jest.clearAllMocks(); // Reset call counts
       await executeTool('undo_last_change', {}, ctx);
@@ -328,6 +347,7 @@ describe('Agent Tool Execution', () => {
       await executeTool('create_meeting', {
         subject: 'Test', startTime: '2026-03-02T09:00:00', endTime: '2026-03-02T10:00:00',
       }, ctx);
+      await new Promise(resolve => setTimeout(resolve, 10));
 
       await executeTool('undo_last_change', {}, ctx);
       const secondUndo = await executeTool('undo_last_change', {}, ctx);

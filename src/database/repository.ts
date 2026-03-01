@@ -550,6 +550,62 @@ export class Repository {
     return result.rows;
   }
 
+  // ---------- Undo state (DB-backed for Lambda compatibility) ----------
+
+  async saveUndoState(userId: string, channelId: string, state: {
+    action: string;
+    eventId: string;
+    provider: string;
+    previousState?: any;
+    createdEvent?: any;
+  }): Promise<void> {
+    // Delete any prior undo state for this user+channel, then insert new one
+    await pool.query(
+      `DELETE FROM undo_state WHERE user_id = $1 AND channel_id = $2`,
+      [userId, channelId]
+    );
+    await pool.query(
+      `INSERT INTO undo_state (user_id, channel_id, action, event_id, provider, previous_state, created_event)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [userId, channelId, state.action, state.eventId, state.provider,
+       state.previousState ? JSON.stringify(state.previousState) : null,
+       state.createdEvent ? JSON.stringify(state.createdEvent) : null]
+    );
+  }
+
+  async getUndoState(userId: string, channelId: string): Promise<{
+    action: string;
+    eventId: string;
+    provider: string;
+    previousState?: any;
+    createdEvent?: any;
+  } | null> {
+    const result = await pool.query(
+      `SELECT action, event_id, provider, previous_state, created_event
+       FROM undo_state
+       WHERE user_id = $1 AND channel_id = $2
+         AND created_at > NOW() - INTERVAL '10 minutes'
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId, channelId]
+    );
+    if (!result.rows[0]) return null;
+    const row = result.rows[0];
+    return {
+      action: row.action,
+      eventId: row.event_id,
+      provider: row.provider,
+      previousState: row.previous_state || undefined,
+      createdEvent: row.created_event || undefined,
+    };
+  }
+
+  async clearUndoState(userId: string, channelId: string): Promise<void> {
+    await pool.query(
+      `DELETE FROM undo_state WHERE user_id = $1 AND channel_id = $2`,
+      [userId, channelId]
+    );
+  }
+
   // ---------- User settings (ambient features) ----------
 
   async getUserSettings(userId: string): Promise<any> {

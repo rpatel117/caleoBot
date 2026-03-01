@@ -307,24 +307,6 @@ const toolDefinitions: Anthropic.Tool[] = [
   }
 ];
 
-// In-memory undo state: keyed by "userId:channelId"
-interface UndoState {
-  action: 'create' | 'update' | 'delete';
-  eventId: string;
-  provider: string;
-  previousState?: any; // For update: the old event data. For delete: the full event params.
-  createdEvent?: any;  // For create: the event that was created (so we can delete it).
-  timestamp: number;
-}
-const undoStore = new Map<string, UndoState>();
-// Clean up expired entries every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, state] of undoStore) {
-    if (now - state.timestamp > 10 * 60_000) undoStore.delete(key);
-  }
-}, 5 * 60_000).unref();
-
 export class AnthropicAgent {
   private client: Anthropic;
 
@@ -669,13 +651,13 @@ export class AnthropicAgent {
           });
           context.actionsPerformed.meetingsCreated++;
 
-          // Store undo state
-          const undoKey = `${context.dbUserId || context.userContext.userId}:${context.slackChannelId || 'default'}`;
-          undoStore.set(undoKey, {
-            action: 'create', eventId: event.id, provider: provider.providerType,
-            createdEvent: { subject: input.subject, start: startLocal, end: endLocal, attendees },
-            timestamp: Date.now(),
-          });
+          // Store undo state in DB
+          if (context.dbUserId) {
+            repository.saveUndoState(context.dbUserId, context.slackChannelId || 'default', {
+              action: 'create', eventId: event.id, provider: provider.providerType,
+              createdEvent: { subject: input.subject, start: startLocal, end: endLocal, attendees },
+            }).catch(err => console.error('[Undo] save error:', err?.message));
+          }
 
           // Audit log
           if (context.dbUserId) {
@@ -727,12 +709,13 @@ export class AnthropicAgent {
           await provider.calendar.updateEvent(provider.accessToken, input.meetingId, updates);
           context.actionsPerformed.meetingsUpdated++;
 
-          // Store undo state
-          const updateUndoKey = `${context.dbUserId || context.userContext.userId}:${context.slackChannelId || 'default'}`;
-          undoStore.set(updateUndoKey, {
-            action: 'update', eventId: input.meetingId, provider: provider.providerType,
-            previousState, timestamp: Date.now(),
-          });
+          // Store undo state in DB
+          if (context.dbUserId) {
+            repository.saveUndoState(context.dbUserId, context.slackChannelId || 'default', {
+              action: 'update', eventId: input.meetingId, provider: provider.providerType,
+              previousState,
+            }).catch(err => console.error('[Undo] save error:', err?.message));
+          }
 
           // Audit log
           if (context.dbUserId) {
@@ -773,12 +756,13 @@ export class AnthropicAgent {
           await provider.calendar.deleteEvent(provider.accessToken, input.meetingId);
           context.actionsPerformed.meetingsDeleted++;
 
-          // Store undo state
-          const deleteUndoKey = `${context.dbUserId || context.userContext.userId}:${context.slackChannelId || 'default'}`;
-          undoStore.set(deleteUndoKey, {
-            action: 'delete', eventId: input.meetingId, provider: provider.providerType,
-            previousState: deletedEventDetails, timestamp: Date.now(),
-          });
+          // Store undo state in DB
+          if (context.dbUserId) {
+            repository.saveUndoState(context.dbUserId, context.slackChannelId || 'default', {
+              action: 'delete', eventId: input.meetingId, provider: provider.providerType,
+              previousState: deletedEventDetails,
+            }).catch(err => console.error('[Undo] save error:', err?.message));
+          }
 
           // Audit log
           if (context.dbUserId) {
@@ -1206,13 +1190,13 @@ export class AnthropicAgent {
             }).catch(err => console.error('[AuditLog] create_focus_time error:', err?.message));
           }
 
-          // Store undo state
-          const focusUndoKey = `${context.dbUserId || context.userContext.userId}:${context.slackChannelId || 'default'}`;
-          undoStore.set(focusUndoKey, {
-            action: 'create', eventId: event.id, provider: provider.providerType,
-            createdEvent: { subject: title, start: startLocal, end: endLocal },
-            timestamp: Date.now(),
-          });
+          // Store undo state in DB
+          if (context.dbUserId) {
+            repository.saveUndoState(context.dbUserId, context.slackChannelId || 'default', {
+              action: 'create', eventId: event.id, provider: provider.providerType,
+              createdEvent: { subject: title, start: startLocal, end: endLocal },
+            }).catch(err => console.error('[Undo] save error:', err?.message));
+          }
 
           // Check weekly goal progress
           let goalProgress = '';
@@ -1263,10 +1247,14 @@ export class AnthropicAgent {
       }
 
       case 'undo_last_change': {
-        const undoKey = `${context.dbUserId || context.userContext.userId}:${context.slackChannelId || 'default'}`;
-        const state = undoStore.get(undoKey);
+        if (!context.dbUserId) {
+          return { success: false, error: 'No recent changes to undo, or the undo window (10 minutes) has expired.' };
+        }
 
-        if (!state || Date.now() - state.timestamp > 10 * 60_000) {
+        const channelId = context.slackChannelId || 'default';
+        const state = await repository.getUndoState(context.dbUserId, channelId);
+
+        if (!state) {
           return { success: false, error: 'No recent changes to undo, or the undo window (10 minutes) has expired.' };
         }
 
@@ -1316,15 +1304,13 @@ export class AnthropicAgent {
           }
 
           // Audit log the undo
-          if (context.dbUserId) {
-            repository.logAction({
-              userId: context.dbUserId, action: `undo_${state.action}`, eventId: state.eventId,
-              provider: state.provider, details: { originalAction: state.action },
-              slackChannel: context.slackChannelId, slackThreadTs: context.slackThreadTs,
-            }).catch(err => console.error('[AuditLog] undo error:', err?.message));
-          }
+          repository.logAction({
+            userId: context.dbUserId, action: `undo_${state.action}`, eventId: state.eventId,
+            provider: state.provider, details: { originalAction: state.action },
+            slackChannel: context.slackChannelId, slackThreadTs: context.slackThreadTs,
+          }).catch(err => console.error('[AuditLog] undo error:', err?.message));
 
-          undoStore.delete(undoKey);
+          await repository.clearUndoState(context.dbUserId, channelId);
           return result;
         } catch (error: any) {
           return { success: false, error: `Undo failed: ${error?.message || 'Unknown error'}` };

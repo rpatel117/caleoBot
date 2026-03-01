@@ -193,7 +193,7 @@ describe('Agent Config', () => {
       const prompt = buildSystemPrompt(ctx);
       expect(prompt).toContain('CALENDAR CONTEXT');
       expect(prompt).toContain('Yesterday Meeting');
-      expect(prompt).toContain('do NOT re-fetch');
+      expect(prompt).toContain('WITHOUT re-fetching');
     });
 
     test('includes Slack thread URL when present', () => {
@@ -205,11 +205,23 @@ describe('Agent Config', () => {
       expect(prompt).toContain('https://slack.com/archives/C123/p1234567890123456');
     });
 
+    test('includes production behavior rules', () => {
+      const prompt = buildSystemPrompt(baseCtx);
+      expect(prompt).toContain('PRODUCTION BEHAVIOR');
+      expect(prompt).toContain('Never explain how you work internally');
+    });
+
+    test('calendar query instructions encourage fetching when in doubt', () => {
+      const prompt = buildSystemPrompt(baseCtx);
+      expect(prompt).toContain('When in doubt, call the API');
+      expect(prompt).toContain('unnecessary API call is always better');
+    });
+
     test('prompt is not excessively long (cost control)', () => {
       const prompt = buildSystemPrompt(baseCtx);
-      // Base prompt grew with Focus Time, Impact Scoring, Recurring, Undo sections
-      // Should still stay under ~7500 chars to keep input tokens reasonable
-      expect(prompt.length).toBeLessThan(7500);
+      // Base prompt grew with Focus Time, Impact Scoring, Recurring, Undo, Production Behavior sections
+      // Should still stay under ~8000 chars to keep input tokens reasonable
+      expect(prompt.length).toBeLessThan(8000);
     });
 
     test('heavy week message for >15 events', () => {

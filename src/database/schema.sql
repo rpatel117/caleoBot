@@ -151,6 +151,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id, created_at DESC);
 
+-- Undo state (DB-backed, replaces in-memory store for Lambda compatibility)
+CREATE TABLE IF NOT EXISTS undo_state (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id),
+  channel_id VARCHAR(255) NOT NULL,
+  action VARCHAR(20) NOT NULL,
+  event_id VARCHAR(500) NOT NULL,
+  provider VARCHAR(20) NOT NULL,
+  previous_state JSONB,
+  created_event JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_undo_state_user_channel ON undo_state(user_id, channel_id);
+
 -- Cross-workspace email lookup (case-insensitive) for cross-org meeting support
 -- In production, use CREATE INDEX CONCURRENTLY to avoid table locks
 CREATE INDEX IF NOT EXISTS idx_users_email_lower ON users(LOWER(email));
