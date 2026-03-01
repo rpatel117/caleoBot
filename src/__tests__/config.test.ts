@@ -104,13 +104,14 @@ describe('Agent Config', () => {
           subject: 'Team Standup',
           start: '9:00 AM',
           end: '9:30 AM',
-          attendeeCount: 5,
+          attendees: ['Alice <alice@co.com>', 'Bob <bob@co.com>'],
           hasVideoLink: true,
         }],
       };
       const prompt = buildSystemPrompt(ctx);
       expect(prompt).toContain('Team Standup');
       expect(prompt).toContain('[video]');
+      expect(prompt).toContain('(with: Alice <alice@co.com>, Bob <bob@co.com>)');
     });
 
     test('shows no events message when empty', () => {
@@ -181,7 +182,7 @@ describe('Agent Config', () => {
           {
             dateStr: '2026-03-01',
             label: 'yesterday',
-            events: [{ id: '1', subject: 'Yesterday Meeting', start: '9 AM', end: '10 AM', attendeeCount: 2, hasVideoLink: false }],
+            events: [{ id: '1', subject: 'Yesterday Meeting', start: '9 AM', end: '10 AM', attendees: ['Siva <siva@co.com>', 'Kunal <kunal@co.com>'], hasVideoLink: false }],
           },
           {
             dateStr: '2026-03-02',
@@ -194,6 +195,46 @@ describe('Agent Config', () => {
       expect(prompt).toContain('CALENDAR CONTEXT');
       expect(prompt).toContain('Yesterday Meeting');
       expect(prompt).toContain('WITHOUT re-fetching');
+      expect(prompt).toContain('(with: Siva <siva@co.com>, Kunal <kunal@co.com>)');
+    });
+
+    test('truncates attendees when more than 4', () => {
+      const ctx = {
+        ...baseCtx,
+        todayEvents: [{
+          id: 'evt-2',
+          subject: 'All Hands',
+          start: '10:00 AM',
+          end: '11:00 AM',
+          attendees: ['Alice <a@co.com>', 'Bob <b@co.com>', 'Carol <c@co.com>', 'Dan <d@co.com>', 'Eve <e@co.com>'],
+          hasVideoLink: false,
+        }],
+      };
+      const prompt = buildSystemPrompt(ctx);
+      expect(prompt).toContain('(with: Alice <a@co.com>, Bob <b@co.com>, Carol <c@co.com> +2 more)');
+    });
+
+    test('shows no attendees when list is empty', () => {
+      const ctx = {
+        ...baseCtx,
+        todayEvents: [{
+          id: 'evt-3',
+          subject: 'Solo Focus',
+          start: '1:00 PM',
+          end: '2:00 PM',
+          attendees: [],
+          hasVideoLink: false,
+        }],
+      };
+      const prompt = buildSystemPrompt(ctx);
+      expect(prompt).toContain('Solo Focus');
+      expect(prompt).not.toContain('(with:');
+    });
+
+    test('includes attendee lookup fallback in resolution protocol', () => {
+      const prompt = buildSystemPrompt(baseCtx);
+      expect(prompt).toContain('check the pre-loaded calendar context');
+      expect(prompt).toContain('get_calendar_events');
     });
 
     test('includes Slack thread URL when present', () => {

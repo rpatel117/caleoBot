@@ -14,7 +14,7 @@ export interface FormattedCalendarSnapshot {
   subject: string;
   start: string;
   end: string;
-  attendeeCount: number;
+  attendees: string[];
   hasVideoLink: boolean;
 }
 
@@ -75,7 +75,13 @@ export function buildSystemPrompt(ctx: DynamicPromptContext): string {
       }
       const eventLines = day.events.map(e => {
         let line = `    • ${e.start} – ${e.end}: ${e.subject}`;
-        if (e.attendeeCount > 0) line += ` (${e.attendeeCount} attendees)`;
+        if (e.attendees.length > 0) {
+          if (e.attendees.length <= 4) {
+            line += ` (with: ${e.attendees.join(', ')})`;
+          } else {
+            line += ` (with: ${e.attendees.slice(0, 3).join(', ')} +${e.attendees.length - 3} more)`;
+          }
+        }
         if (e.hasVideoLink) line += ' [video]';
         return line;
       });
@@ -85,7 +91,13 @@ export function buildSystemPrompt(ctx: DynamicPromptContext): string {
   } else if (ctx.todayEvents.length > 0) {
     const eventLines = ctx.todayEvents.map(e => {
       let line = `  • ${e.start} – ${e.end}: ${e.subject}`;
-      if (e.attendeeCount > 0) line += ` (${e.attendeeCount} attendees)`;
+      if (e.attendees.length > 0) {
+        if (e.attendees.length <= 4) {
+          line += ` (with: ${e.attendees.join(', ')})`;
+        } else {
+          line += ` (with: ${e.attendees.slice(0, 3).join(', ')} +${e.attendees.length - 3} more)`;
+        }
+      }
       if (e.hasVideoLink) line += ' [video]';
       return line;
     });
@@ -126,7 +138,7 @@ When the user mentions ANY person (by name, @mention, or description), you MUST 
 - Plain name (e.g. "Kunal", "Sarah", "my manager") → call search_people IMMEDIATELY
   • Single match: "I found *Full Name* (email) — is that right?"
   • Multiple matches: numbered list, ask user to pick
-  • Zero matches: tell user, ask for email directly
+  • Zero matches: check the pre-loaded calendar context above for a matching attendee name — if found, use that email. Otherwise, call get_calendar_events for a wider date range and look for matching attendee names/emails in the results. Only ask the user for an email if no match is found anywhere.
   • Error or "note" field: relay the message to the user (e.g. permission updates needed via /caleo-auth)
 - NEVER skip calling search_people. NEVER guess emails. NEVER ask for the email without searching first.
 - If search_people returns a "note" about permissions, include it in your response so the user knows how to enable full directory search.

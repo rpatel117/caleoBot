@@ -18,12 +18,17 @@ export function formatTimeRange(startIso: string, endIso: string, tz: string): {
 export function formatEventsForPrompt(events: CalendarEvent[], tz: string): FormattedCalendarSnapshot[] {
   return events.map(e => {
     const { start, end } = formatTimeRange(e.start.dateTime, e.end.dateTime, tz);
+    const attendees = (e.attendees || []).map(a => {
+      const name = a.emailAddress.name;
+      const email = a.emailAddress.address;
+      return name ? `${name} <${email}>` : email;
+    });
     return {
       id: e.id,
       subject: e.subject,
       start,
       end,
-      attendeeCount: e.attendees?.length || 0,
+      attendees,
       hasVideoLink: !!e.onlineMeetingUrl,
     };
   });
