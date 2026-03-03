@@ -165,6 +165,72 @@ CREATE TABLE IF NOT EXISTS undo_state (
 );
 CREATE INDEX IF NOT EXISTS idx_undo_state_user_channel ON undo_state(user_id, channel_id);
 
+-- Rate limiting (database-backed for multi-instance consistency)
+CREATE TABLE IF NOT EXISTS rate_limit_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  key VARCHAR(255) NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rate_limit_key_time ON rate_limit_events(key, created_at DESC);
+
 -- Cross-workspace email lookup (case-insensitive) for cross-org meeting support
 -- In production, use CREATE INDEX CONCURRENTLY to avoid table locks
 CREATE INDEX IF NOT EXISTS idx_users_email_lower ON users(LOWER(email));
+
+-- ============================================================
+-- Row-Level Security (RLS) Policies
+-- IMPORTANT: Phase 1 + Phase 2 combined — FORCE is required
+-- because caleo_admin is the table owner and would bypass
+-- RLS policies without it.
+--
+-- Application code MUST call set_app_context() before each
+-- query to set transaction-local session variables.
+-- Without set_app_context(), queries return zero rows.
+-- ============================================================
+
+-- Helper function to set transaction-local app context
+CREATE OR REPLACE FUNCTION set_app_context(p_workspace_id TEXT, p_user_id TEXT)
+RETURNS VOID AS $$
+BEGIN
+  PERFORM set_config('app.workspace_id', p_workspace_id, true);
+  PERFORM set_config('app.user_id', p_user_id, true);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Users: scoped by workspace_id
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS users_workspace_policy ON users;
+CREATE POLICY users_workspace_policy ON users
+  USING (workspace_id::text = current_setting('app.workspace_id', true));
+
+-- OAuth tokens: scoped by user_id
+ALTER TABLE oauth_tokens ENABLE ROW LEVEL SECURITY;
+ALTER TABLE oauth_tokens FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS oauth_tokens_user_policy ON oauth_tokens;
+CREATE POLICY oauth_tokens_user_policy ON oauth_tokens
+  USING (user_id::text = current_setting('app.user_id', true));
+
+-- Conversations: scoped by user_id
+ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE conversations FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS conversations_user_policy ON conversations;
+CREATE POLICY conversations_user_policy ON conversations
+  USING (user_id::text = current_setting('app.user_id', true));
+
+-- Messages: scoped by conversation ownership (user_id via conversation)
+ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE messages FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS messages_user_policy ON messages;
+CREATE POLICY messages_user_policy ON messages
+  USING (conversation_id IN (
+    SELECT id FROM conversations
+    WHERE user_id::text = current_setting('app.user_id', true)
+  ));
+
+-- User settings: scoped by user_id
+ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_settings FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS user_settings_user_policy ON user_settings;
+CREATE POLICY user_settings_user_policy ON user_settings
+  USING (user_id::text = current_setting('app.user_id', true));

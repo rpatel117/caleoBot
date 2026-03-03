@@ -21,6 +21,7 @@ import { signCheckoutParams } from '../billing/checkout-signer';
 import { CalendarEvent } from '../calendar/types';
 import { verifyAndDecodeState } from '../auth/oauth-state';
 import { RateLimiter } from '../rate-limiter';
+import { DbRateLimiter } from '../db-rate-limiter';
 import { createCheckoutSession, constructWebhookEvent } from '../billing/stripe';
 import { verifyCheckoutParams } from '../billing/checkout-signer';
 import { notifier, NotifyEvent } from '../notifications/notify';
@@ -35,8 +36,9 @@ const processedEventIds = new Set<string>();
 const processedEventTtlMs = 5 * 60 * 1000;
 
 // Rate limiting: 10 messages per user per 60 seconds
-const messageRateLimiter = new RateLimiter(10, 60_000);
-setInterval(() => messageRateLimiter.cleanup(), 5 * 60_000);
+// In-memory limiter used as fast path; DB limiter used in production for multi-instance consistency
+const inMemoryRateLimiter = new RateLimiter(10, 60_000);
+const dbRateLimiter = new DbRateLimiter(pool, 10, 60_000);
 
 function getRequiredEnv(name: string): string {
   const value = process.env[name];
@@ -97,6 +99,7 @@ const crossOrgService = new CrossOrgService({ googleOAuth, microsoftOAuth, repos
 // Ambient services
 import { StatusSyncService } from './status-sync';
 import { DailyBriefingService } from './daily-briefing';
+import { CleanupService } from '../database/cleanup-service';
 
 function getRedirectUri(): string {
   if (process.env.OAUTH_REDIRECT_URI) return process.env.OAUTH_REDIRECT_URI;
@@ -319,8 +322,35 @@ const httpServer = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://localhost:${httpPort}`);
 
   if (url.pathname === '/api/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'OK', service: 'caleo-slack-bot', socketMode }));
+    try {
+      const dbHealthy = await repository.testConnection();
+      // Check Slack WebSocket connectivity (socket mode only)
+      const slackConnected = !socketMode || (app?.client?.token ? true : false);
+      const healthy = dbHealthy && slackConnected;
+
+      const status = healthy ? 'healthy' : 'degraded';
+      const statusCode = healthy ? 200 : 503;
+
+      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status,
+        service: 'caleo-slack-bot',
+        database: dbHealthy ? 'connected' : 'unreachable',
+        slack: slackConnected ? 'connected' : 'disconnected',
+        socketMode,
+        timestamp: new Date().toISOString(),
+      }));
+    } catch {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'degraded',
+        service: 'caleo-slack-bot',
+        database: 'unreachable',
+        slack: 'unknown',
+        socketMode,
+        timestamp: new Date().toISOString(),
+      }));
+    }
     return;
   }
 
@@ -542,7 +572,13 @@ async function processUserMessage(args: {
   if (!normalizedText) return;
 
   // --- Rate limiting (before any DB lookups) ---
-  const rateCheck = messageRateLimiter.check(args.userId);
+  // Use DB-backed limiter in production for consistency across ECS tasks; fall back to in-memory
+  let rateCheck: { allowed: boolean; retryAfterMs: number };
+  try {
+    rateCheck = await dbRateLimiter.check(args.userId);
+  } catch {
+    rateCheck = inMemoryRateLimiter.check(args.userId);
+  }
   if (!rateCheck.allowed) {
     notifier.emit(NotifyEvent.RATE_LIMIT_HIT, `Rate limit hit by user ${args.userId}`, `channel=${args.channel}`);
     const waitSec = Math.ceil(rateCheck.retryAfterMs / 1000);
@@ -1339,6 +1375,7 @@ app.error((error: any) => {
 // Ambient service instances (created after app.start so we have the slack client)
 let statusSyncService: StatusSyncService | null = null;
 let dailyBriefingService: DailyBriefingService | null = null;
+let cleanupService: CleanupService | null = null;
 
 async function start(): Promise<void> {
   // Start the HTTP server for health check + OAuth
@@ -1357,14 +1394,16 @@ async function start(): Promise<void> {
   const slackClient = app.client;
   statusSyncService = new StatusSyncService({ slackClient, googleOAuth, microsoftOAuth });
   dailyBriefingService = new DailyBriefingService({ slackClient, googleOAuth, microsoftOAuth });
+  cleanupService = new CleanupService();
   statusSyncService.start();
   dailyBriefingService.start();
+  cleanupService.start();
 
   console.log(`Caleo Slack bot is running`);
   console.log(`Health check: http://localhost:${httpPort}/api/health`);
   console.log(`OAuth callback: http://localhost:${httpPort}/auth/callback`);
   console.log(`Mode: ${socketMode ? 'Socket Mode' : 'HTTP Events API'}`);
-  console.log(`Ambient services: Status Sync + Daily Briefing`);
+  console.log(`Ambient services: Status Sync + Daily Briefing + Database Cleanup`);
 }
 
 // Graceful shutdown for ECS SIGTERM
@@ -1373,6 +1412,7 @@ function shutdown(signal: string) {
   notifier.stop();
   statusSyncService?.stop();
   dailyBriefingService?.stop();
+  cleanupService?.stop();
   httpServer.close(() => console.log('HTTP server closed'));
   pool.end().then(() => console.log('DB pool closed')).catch(() => {});
   setTimeout(() => { console.log('Forcing exit'); process.exit(0); }, 10000);

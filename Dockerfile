@@ -7,8 +7,14 @@ RUN npm ci --omit=dev
 
 COPY dist/ ./dist/
 
+# Download RDS CA bundle for SSL certificate pinning
+RUN wget -q -O /app/rds-combined-ca-bundle.pem \
+  https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+
 RUN addgroup -g 1001 nodejs && adduser -u 1001 -G nodejs -S nodejs
 USER nodejs
+
+ENV RDS_CA_CERT_PATH=/app/rds-combined-ca-bundle.pem
 
 EXPOSE 3000
 

@@ -3,6 +3,16 @@ import { AGENT_CONFIG } from '../agent/config';
 import { MonthlyUsage } from '../billing/plans';
 
 export class Repository {
+  /**
+   * Set RLS app context for the current transaction.
+   * Must be called before queries on RLS-protected tables (users, oauth_tokens,
+   * conversations, messages, user_settings).
+   * Uses transaction-local settings via set_config(..., true).
+   */
+  async setAppContext(workspaceId: string, userId: string): Promise<void> {
+    await pool.query(`SELECT set_app_context($1, $2)`, [workspaceId, userId]);
+  }
+
   // Workspace operations
   async getOrCreateWorkspace(platform: string, externalId: string, name?: string): Promise<any> {
     const result = await pool.query(
@@ -507,6 +517,10 @@ export class Repository {
   /**
    * Look up attendee emails across ALL workspaces, returning which are Caleo users
    * and what calendar providers they have connected.
+   *
+   * INTENTIONALLY UNSCOPED by workspace — cross-org meeting creation requires
+   * looking up users across all workspaces to create native calendar events
+   * on their calendars. Do not add workspace filtering here.
    */
   async findCaleoUsersByEmails(emails: string[]): Promise<Array<{
     email: string;
@@ -538,10 +552,23 @@ export class Repository {
   }
 
   /**
-   * Search Caleo users by name or email across all workspaces.
-   * Used by search_people to find cross-org contacts.
+   * Search Caleo users by name or email, scoped to a specific workspace.
+   * Used by search_people to find contacts within the user's own workspace.
    */
-  async searchUsersByName(query: string, limit: number = 5): Promise<any[]> {
+  async searchUsersByName(query: string, limit: number = 5, workspaceId?: string): Promise<any[]> {
+    if (workspaceId) {
+      const result = await pool.query(
+        `SELECT DISTINCT ON (LOWER(email)) display_name, email
+         FROM users
+         WHERE email IS NOT NULL AND email NOT LIKE '%@slack.local'
+           AND (LOWER(display_name) LIKE $1 OR LOWER(email) LIKE $1)
+           AND workspace_id = $3
+         ORDER BY LOWER(email), created_at DESC
+         LIMIT $2`,
+        [`%${query.toLowerCase()}%`, limit, workspaceId]
+      );
+      return result.rows;
+    }
     const result = await pool.query(
       `SELECT DISTINCT ON (LOWER(email)) display_name, email
        FROM users
@@ -663,6 +690,11 @@ export class Repository {
     return result.rows[0];
   }
 
+  /**
+   * INTENTIONALLY UNSCOPED by workspace — status sync runs as a background
+   * service that processes all users across all workspaces. Do not add
+   * workspace filtering here.
+   */
   async getActiveStatusSyncUsers(): Promise<any[]> {
     const result = await pool.query(
       `SELECT us.*, u.external_id AS slack_user_id, u.timezone, u.id AS db_user_id

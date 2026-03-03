@@ -346,10 +346,11 @@ export class AnthropicAgent {
 
     const system = systemPrompt || AGENT_INSTRUCTIONS;
 
-    // Tool use loop
+    // Tool use loop — use lower temperature for deterministic tool execution
     let response = await this.client.messages.create({
       model: AGENT_CONFIG.model,
       max_tokens: AGENT_CONFIG.maxTokens,
+      temperature: AGENT_CONFIG.toolTemperature,
       system,
       tools: toolDefinitions,
       messages,
@@ -395,6 +396,7 @@ export class AnthropicAgent {
       response = await this.client.messages.create({
         model: AGENT_CONFIG.model,
         max_tokens: AGENT_CONFIG.maxTokens,
+        temperature: AGENT_CONFIG.toolTemperature,
         system,
         tools: toolDefinitions,
         messages,
@@ -1060,10 +1062,10 @@ export class AnthropicAgent {
           console.warn('[search_people] No slackClient available — skipping Slack search');
         }
 
-        // 3. Search Caleo DB across all workspaces
+        // 3. Search Caleo DB (scoped to user's workspace to prevent cross-workspace data leakage)
         if (context.crossOrgService) {
           try {
-            const caleoResults = await repository.searchUsersByName(input.query);
+            const caleoResults = await repository.searchUsersByName(input.query, 5, context.workspaceId);
             searchedSources.push('Caleo user database');
             console.log(`[search_people] Caleo DB returned ${caleoResults.length} result(s)`);
             for (const r of caleoResults) {
