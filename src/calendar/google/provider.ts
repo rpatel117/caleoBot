@@ -27,7 +27,14 @@ export class GoogleCalendarProvider implements CalendarProvider {
     }
 
     const data = await response.json() as any;
-    return (data.items || []).map((item: any) => this.mapEvent(item));
+    const items = data.items || [];
+    // Log first event's raw attendee data for debugging response status issues
+    if (items.length > 0) {
+      const sample = items[0];
+      const selfAtt = sample.attendees?.find((a: any) => a.self === true);
+      console.log(`[Google getEvents] ${items.length} events, sample: "${sample.summary}", status=${sample.status}, selfAttendee=${JSON.stringify(selfAtt || 'none')}`);
+    }
+    return items.map((item: any) => this.mapEvent(item));
   }
 
   async createEvent(accessToken: string, params: CreateEventParams): Promise<CalendarEvent> {
