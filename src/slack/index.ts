@@ -321,9 +321,18 @@ const httpPort = Number(process.env.SLACK_PORT || process.env.PORT || 3000);
 const httpServer = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://localhost:${httpPort}`);
 
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+
   if (url.pathname === '/api/health') {
     try {
-      const dbHealthy = await repository.testConnection();
+      const dbHealthy = await Promise.race([
+        repository.testConnection(),
+        new Promise<boolean>((_, reject) =>
+          setTimeout(() => reject(new Error('Health check timeout')), 5000)
+        ),
+      ]).catch(() => false);
       // Check Slack WebSocket connectivity (socket mode only)
       const slackConnected = !socketMode || (app?.client?.token ? true : false);
       const healthy = dbHealthy && slackConnected;
@@ -414,7 +423,7 @@ const httpServer = http.createServer(async (req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: 'Calendar connection failed',
       }));
     }
     return;
@@ -427,9 +436,10 @@ const httpServer = http.createServer(async (req, res) => {
       const amountCents = parseInt(url.searchParams.get('amount') || '0', 10);
       const userId = url.searchParams.get('user') || '';
       const dbUserId = url.searchParams.get('dbUser') || '';
+      const ts = parseInt(url.searchParams.get('ts') || '0', 10);
       const sig = url.searchParams.get('sig') || '';
 
-      if (!amountCents || !userId || !dbUserId || !sig) {
+      if (!amountCents || !userId || !dbUserId || !ts || !sig) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Missing required parameters' }));
         return;
@@ -439,7 +449,7 @@ const httpServer = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: 'Invalid amount' }));
         return;
       }
-      if (!verifyCheckoutParams(amountCents, userId, dbUserId, sig)) {
+      if (!verifyCheckoutParams(amountCents, userId, dbUserId, ts, sig)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid signature — use /caleo-billing in Slack' }));
         return;
@@ -457,7 +467,7 @@ const httpServer = http.createServer(async (req, res) => {
     } catch (error) {
       console.error('Billing checkout error:', error);
       res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'Checkout failed' }));
+      res.end(JSON.stringify({ error: 'Checkout failed' }));
     }
     return;
   }
@@ -800,7 +810,7 @@ async function processUserMessage(args: {
 
   // --- Deduct balance & log usage (skip for developers) ---
   if (userType !== 'developer') {
-    const costCents = calculateCostCents(agentResponse.totalUsage);
+    const costCents = calculateCostCents(agentResponse.totalUsage, agentResponse.sonnetUsage);
     if (costCents > 0 && conversationId) {
       try {
         await repository.deductBalance(dbUserId, costCents);
@@ -869,7 +879,7 @@ app.command('/caleo', async ({ command, ack, client, body }: any) => {
     notifier.emit(NotifyEvent.UNHANDLED_ERROR, '/caleo command error', `user=${command.user_id}`, error instanceof Error ? error : new Error(String(error)));
     await client.chat.postMessage({
       channel: command.channel_id,
-      text: `Sorry, something went wrong: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      text: 'Sorry, something went wrong. Please try again.',
     });
   }
 });
@@ -970,8 +980,9 @@ app.command('/caleo-billing', async ({ command, ack, respond, client, body }: an
     const baseUrl = process.env.BILLING_BASE_URL || process.env.NGROK_URL || `http://localhost:${httpPort}`;
 
     const makeUrl = (amount: number) => {
-      const sig = signCheckoutParams(amount, command.user_id, dbUserId);
-      return `${baseUrl}/billing/checkout?amount=${amount}&user=${command.user_id}&dbUser=${dbUserId}&sig=${sig}`;
+      const ts = Date.now();
+      const sig = signCheckoutParams(amount, command.user_id, dbUserId, ts);
+      return `${baseUrl}/billing/checkout?amount=${amount}&user=${command.user_id}&dbUser=${dbUserId}&ts=${ts}&sig=${sig}`;
     };
 
     await respond({
@@ -1011,7 +1022,7 @@ app.command('/caleo-billing', async ({ command, ack, respond, client, body }: an
     });
   } catch (error) {
     console.error('/caleo-billing error:', error);
-    await respond(`Sorry, something went wrong: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    await respond('Sorry, something went wrong. Please try again.');
   }
 });
 
@@ -1301,7 +1312,7 @@ app.command('/caleo-privacy', async ({ command, ack, respond, client, body }: an
     await respond({ text: 'Caleo Privacy & Permissions', blocks });
   } catch (error) {
     console.error('/caleo-privacy error:', error);
-    await respond(`Sorry, something went wrong: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    await respond('Sorry, something went wrong. Please try again.');
   }
 });
 
@@ -1413,12 +1424,16 @@ function shutdown(signal: string) {
   statusSyncService?.stop();
   dailyBriefingService?.stop();
   cleanupService?.stop();
+  app.stop().catch(() => {});
   httpServer.close(() => console.log('HTTP server closed'));
   pool.end().then(() => console.log('DB pool closed')).catch(() => {});
   setTimeout(() => { console.log('Forcing exit'); process.exit(0); }, 10000);
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection:', reason);
+});
 
 start().catch((error) => {
   console.error('Failed to start Slack bot:', error);

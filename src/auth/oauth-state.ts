@@ -20,10 +20,12 @@ export interface OAuthStateData {
   userId: string;
   workspaceId: string;
   provider: string;
+  createdAt?: number;
 }
 
 export function createSignedState(data: OAuthStateData): string {
-  const payload = Buffer.from(JSON.stringify(data)).toString('base64');
+  const stateData = { ...data, createdAt: Date.now() };
+  const payload = Buffer.from(JSON.stringify(stateData)).toString('base64');
   const signature = crypto
     .createHmac('sha256', getSigningKey())
     .update(payload)
@@ -52,6 +54,12 @@ export function verifyAndDecodeState(state: string): OAuthStateData {
   const data = JSON.parse(Buffer.from(payload, 'base64').toString());
   if (!data.userId || !data.workspaceId || !data.provider) {
     throw new Error('Invalid OAuth state: missing required fields');
+  }
+
+  // Reject expired states (10-minute window)
+  const STATE_EXPIRY_MS = 10 * 60 * 1000;
+  if (data.createdAt && Date.now() - data.createdAt > STATE_EXPIRY_MS) {
+    throw new Error('Invalid OAuth state: expired');
   }
 
   return data as OAuthStateData;

@@ -3,6 +3,7 @@ import {
   AvailabilityResult, FreeTimeParams, TimeSlot, AttendeeAvailability,
   ResponseStatus,
 } from '../types';
+import { fetchWithRetry } from '../fetch-retry';
 
 const BASE_URL = 'https://graph.microsoft.com/v1.0';
 
@@ -12,7 +13,7 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
     const endParam = encodeURIComponent(end.toISOString());
     const url = `${BASE_URL}/me/calendar/events?startDateTime=${startParam}&endDateTime=${endParam}&$top=500&$orderby=start/dateTime`;
 
-    const response = await fetch(url, {
+    const response = await fetchWithRetry(url, {
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
@@ -73,7 +74,7 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
 
     console.log(`[Microsoft] Creating event "${params.subject}" with ${params.attendees?.length || 0} attendees: ${JSON.stringify(params.attendees)}`);
 
-    const response = await fetch(`${BASE_URL}/me/calendar/events`, {
+    const response = await fetchWithRetry(`${BASE_URL}/me/calendar/events`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -118,7 +119,7 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
 
     console.log(`[Microsoft] Updating event ${eventId} with ${updates.attendees?.length || 0} attendees`);
 
-    const response = await fetch(`${BASE_URL}/me/calendar/events/${encodeURIComponent(eventId)}`, {
+    const response = await fetchWithRetry(`${BASE_URL}/me/calendar/events/${encodeURIComponent(eventId)}`, {
       method: 'PATCH',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -141,7 +142,7 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
   async deleteEvent(accessToken: string, eventId: string): Promise<void> {
     console.log(`[Microsoft] Deleting event ${eventId}`);
 
-    const response = await fetch(`${BASE_URL}/me/calendar/events/${encodeURIComponent(eventId)}`, {
+    const response = await fetchWithRetry(`${BASE_URL}/me/calendar/events/${encodeURIComponent(eventId)}`, {
       method: 'DELETE',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -187,7 +188,7 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
       availabilityViewInterval: 15,
     };
 
-    const response = await fetch(`${BASE_URL}/me/calendar/getSchedule`, {
+    const response = await fetchWithRetry(`${BASE_URL}/me/calendar/getSchedule`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,

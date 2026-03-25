@@ -30,18 +30,18 @@ describe('Security', () => {
 
     test('checkout URL amount cannot be tampered', () => {
       const { signCheckoutParams, verifyCheckoutParams } = require('../billing/checkout-signer');
-
-      const sig = signCheckoutParams(500, 'U123', 'db-1');
+      const ts = Date.now();
+      const sig = signCheckoutParams(500, 'U123', 'db-1', ts);
       // Attacker changes amount to $20
-      expect(verifyCheckoutParams(2000, 'U123', 'db-1', sig)).toBe(false);
+      expect(verifyCheckoutParams(2000, 'U123', 'db-1', ts, sig)).toBe(false);
     });
 
     test('checkout URL user cannot be substituted', () => {
       const { signCheckoutParams, verifyCheckoutParams } = require('../billing/checkout-signer');
-
-      const sig = signCheckoutParams(500, 'U123', 'db-victim');
+      const ts = Date.now();
+      const sig = signCheckoutParams(500, 'U123', 'db-victim', ts);
       // Attacker changes dbUser to credit their own account
-      expect(verifyCheckoutParams(500, 'U123', 'db-attacker', sig)).toBe(false);
+      expect(verifyCheckoutParams(500, 'U123', 'db-attacker', ts, sig)).toBe(false);
     });
 
     test('DataSanitizer strips XSS vectors from event bodies', () => {

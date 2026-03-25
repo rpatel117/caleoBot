@@ -1,6 +1,7 @@
 export const AGENT_CONFIG = {
   name: 'Caleo Assistant',
   model: 'claude-haiku-4-5-20251001',
+  sonnetModel: 'claude-sonnet-4-5-20241022',
   maxTokens: 4096,
   toolTemperature: 0.2,
   chatTemperature: 0.5,
@@ -125,10 +126,13 @@ export function buildSystemPrompt(ctx: DynamicPromptContext): string {
     sections.push('TODAY\'S SCHEDULE: No events today.');
   }
 
-  sections.push(`IMPORTANT — TOOL USAGE FOR CALENDAR QUERIES:
-- The calendar context above covers a few surrounding days. Use it for quick references to those specific dates WITHOUT re-fetching.
-- When the user asks about ANY date range not fully covered above, or asks you to "pull up", "check", or "look at" their calendar, ALWAYS call get_calendar_events with the requested date range. Do not say "I don't have that data" — just fetch it.
-- When in doubt, call the API. An unnecessary API call is always better than telling the user you can't access their calendar.
+  const firstDate = ctx.multiDayEvents?.[0]?.dateStr || 'unknown';
+  const lastDate = ctx.multiDayEvents?.[ctx.multiDayEvents.length - 1]?.dateStr || 'unknown';
+  sections.push(`TOOL USAGE — MANDATORY:
+- Your pre-loaded calendar covers ONLY ${firstDate} through ${lastDate}. You have ZERO information about any other dates.
+- For ANY date outside that range, you MUST call get_calendar_events with the requested date range. NEVER say "no events" or "your calendar is clear" for dates you haven't fetched — that is a hallucination.
+- When the user asks you to "pull up", "check", or "look at" their calendar, ALWAYS call get_calendar_events regardless of what you see above.
+- When in doubt, call the tool. A redundant API call is always better than a wrong answer.
 - For creating, updating, or deleting meetings, always use the appropriate tool.`);
 
   // Conflicts

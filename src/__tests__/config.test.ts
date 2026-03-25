@@ -206,7 +206,7 @@ describe('Agent Config', () => {
       const prompt = buildSystemPrompt(ctx);
       expect(prompt).toContain('CALENDAR CONTEXT');
       expect(prompt).toContain('Yesterday Meeting');
-      expect(prompt).toContain('WITHOUT re-fetching');
+      expect(prompt).toContain('do NOT re-fetch these dates');
       expect(prompt).toContain('(with: Siva <siva@co.com>, Kunal <kunal@co.com>)');
     });
 
@@ -266,8 +266,8 @@ describe('Agent Config', () => {
 
     test('calendar query instructions encourage fetching when in doubt', () => {
       const prompt = buildSystemPrompt(baseCtx);
-      expect(prompt).toContain('When in doubt, call the API');
-      expect(prompt).toContain('unnecessary API call is always better');
+      expect(prompt).toContain('When in doubt, call the tool');
+      expect(prompt).toContain('redundant API call is always better');
     });
 
     test('prompt is not excessively long (cost control)', () => {

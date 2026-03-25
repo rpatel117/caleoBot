@@ -21,7 +21,8 @@ describe('OAuth State Signing', () => {
     const data = { userId: 'U123', workspaceId: 'T456', provider: 'google' };
     const state = createSignedState(data);
     const decoded = verifyAndDecodeState(state);
-    expect(decoded).toEqual(data);
+    expect(decoded).toMatchObject(data);
+    expect(decoded.createdAt).toBeDefined();
   });
 
   test('state format contains dot separator', () => {
@@ -78,7 +79,7 @@ describe('OAuth State Signing', () => {
     const data = { userId: 'U1', workspaceId: 'W1', provider: 'google' };
     const state = createSignedState(data);
     // Verify works with same key
-    expect(verifyAndDecodeState(state)).toEqual(data);
+    expect(verifyAndDecodeState(state)).toMatchObject(data);
   });
 
   test('different keys produce different signatures', () => {
@@ -102,6 +103,47 @@ describe('OAuth State Signing', () => {
     jest.resetModules();
     const { createSignedState } = load();
     expect(() => createSignedState({ userId: 'U1', workspaceId: 'W1', provider: 'google' })).toThrow();
+  });
+
+  test('rejects expired state (11 minutes old)', () => {
+    const { createSignedState, verifyAndDecodeState } = load();
+    const data = { userId: 'U123', workspaceId: 'T456', provider: 'google' };
+    const state = createSignedState(data);
+
+    // Advance Date.now by 11 minutes
+    const realDateNow = Date.now;
+    Date.now = () => realDateNow() + 11 * 60 * 1000;
+    try {
+      expect(() => verifyAndDecodeState(state)).toThrow('expired');
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
+  test('accepts state within 10-minute window', () => {
+    const { createSignedState, verifyAndDecodeState } = load();
+    const data = { userId: 'U123', workspaceId: 'T456', provider: 'google' };
+    const state = createSignedState(data);
+
+    // Advance Date.now by 9 minutes (within window)
+    const realDateNow = Date.now;
+    Date.now = () => realDateNow() + 9 * 60 * 1000;
+    try {
+      expect(verifyAndDecodeState(state)).toMatchObject(data);
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
+  test('backward compat: state without createdAt still verifies', () => {
+    const { verifyAndDecodeState } = load();
+    const crypto = require('crypto');
+    const key = crypto.createHash('sha256').update(process.env.ENCRYPTION_KEY!).digest();
+    // Manually create a state without createdAt
+    const payload = Buffer.from(JSON.stringify({ userId: 'U1', workspaceId: 'W1', provider: 'google' })).toString('base64');
+    const sig = crypto.createHmac('sha256', key).update(payload).digest('hex');
+    const decoded = verifyAndDecodeState(`${payload}.${sig}`);
+    expect(decoded).toMatchObject({ userId: 'U1', workspaceId: 'W1', provider: 'google' });
   });
 
   // Timing attack resistance: verifyAndDecodeState uses timingSafeEqual

@@ -39,8 +39,15 @@ try {
 export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
   const corsHeaders = {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': process.env.CORS_ORIGIN || 'https://api.caleoai.com',
   };
+
+  // Verify API key
+  const authHeader = event.headers?.['authorization'] || event.headers?.['Authorization'];
+  const expectedKey = process.env.AGENT_API_KEY;
+  if (!expectedKey || authHeader !== `Bearer ${expectedKey}`) {
+    return { statusCode: 401, headers: corsHeaders, body: JSON.stringify({ error: 'Unauthorized' }) };
+  }
 
   try {
     if (!event.body) {
@@ -119,6 +126,7 @@ export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
         success: true,
         response: agentResponse.text,
         totalUsage: agentResponse.totalUsage,
+        sonnetUsage: agentResponse.sonnetUsage,
         toolIterations: agentResponse.toolIterations,
       }),
     };
@@ -129,7 +137,7 @@ export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
       headers: corsHeaders,
       body: JSON.stringify({
         success: false,
-        error: error instanceof Error ? error.message : 'Internal server error',
+        error: 'Internal server error',
       }),
     };
   }

@@ -3,6 +3,7 @@ import {
   AvailabilityResult, FreeTimeParams, TimeSlot, AttendeeAvailability,
   EventStatus, ResponseStatus,
 } from '../types';
+import { fetchWithRetry } from '../fetch-retry';
 
 const BASE_URL = 'https://www.googleapis.com/calendar/v3';
 
@@ -16,7 +17,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
       maxAttendees: '100',
     });
 
-    const response = await fetch(`${BASE_URL}/calendars/primary/events?${params}`, {
+    const response = await fetchWithRetry(`${BASE_URL}/calendars/primary/events?${params}`, {
       headers: { 'Authorization': `Bearer ${accessToken}` },
     });
 
@@ -73,7 +74,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
 
     console.log(`[Google] Creating event "${params.subject}" with ${params.attendees?.length || 0} attendees: ${JSON.stringify(params.attendees)}`);
 
-    const response = await fetch(url, {
+    const response = await fetchWithRetry(url, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -114,7 +115,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
 
     console.log(`[Google] Updating event ${eventId} with ${updates.attendees?.length || 0} attendees`);
 
-    const response = await fetch(`${BASE_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
+    const response = await fetchWithRetry(`${BASE_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
       method: 'PATCH',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -135,7 +136,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
   async deleteEvent(accessToken: string, eventId: string): Promise<void> {
     console.log(`[Google] Deleting event ${eventId}`);
 
-    const response = await fetch(`${BASE_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
+    const response = await fetchWithRetry(`${BASE_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${accessToken}` },
     });
@@ -158,7 +159,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
       (body.items as any[]).push(...attendees.map(email => ({ id: email })));
     }
 
-    const response = await fetch('https://www.googleapis.com/calendar/v3/freeBusy', {
+    const response = await fetchWithRetry('https://www.googleapis.com/calendar/v3/freeBusy', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,

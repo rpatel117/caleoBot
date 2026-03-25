@@ -134,6 +134,7 @@ export class RemoteAgentClient implements IAgentClient {
       return {
         text: result.response || 'I was unable to generate a response.',
         totalUsage: result.totalUsage || { inputTokens: 0, outputTokens: 0 },
+        sonnetUsage: result.sonnetUsage,
         toolIterations: result.toolIterations || 0,
         actionsPerformed: result.actionsPerformed || { meetingsCreated: 0, meetingsUpdated: 0, meetingsDeleted: 0 },
       };

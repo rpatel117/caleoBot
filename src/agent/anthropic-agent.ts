@@ -31,6 +31,7 @@ export interface AgentContext {
 export interface AgentResponse {
   text: string;
   totalUsage: { inputTokens: number; outputTokens: number };
+  sonnetUsage?: { inputTokens: number; outputTokens: number };
   toolIterations: number;
   actionsPerformed: { meetingsCreated: number; meetingsUpdated: number; meetingsDeleted: number };
 }
@@ -346,9 +347,10 @@ export class AnthropicAgent {
 
     const system = systemPrompt || AGENT_INSTRUCTIONS;
 
-    // Tool use loop — use lower temperature for deterministic tool execution
+    // Initial call uses Sonnet for better tool routing decisions
+    console.log(`[Agent] Initial call: model=${AGENT_CONFIG.sonnetModel}`);
     let response = await this.client.messages.create({
-      model: AGENT_CONFIG.model,
+      model: AGENT_CONFIG.sonnetModel,
       max_tokens: AGENT_CONFIG.maxTokens,
       temperature: AGENT_CONFIG.toolTemperature,
       system,
@@ -356,9 +358,15 @@ export class AnthropicAgent {
       messages,
     });
 
-    // Accumulate usage
-    totalUsage.inputTokens += response.usage?.input_tokens || 0;
-    totalUsage.outputTokens += response.usage?.output_tokens || 0;
+    // Track Sonnet usage separately for blended cost calculation
+    const sonnetUsage = {
+      inputTokens: response.usage?.input_tokens || 0,
+      outputTokens: response.usage?.output_tokens || 0,
+    };
+
+    // Accumulate total usage
+    totalUsage.inputTokens += sonnetUsage.inputTokens;
+    totalUsage.outputTokens += sonnetUsage.outputTokens;
     console.log(`[Agent] Initial response: stop_reason=${response.stop_reason}, blocks=${response.content.length}`);
 
     // Process tool calls in a loop until we get a final text response
@@ -393,6 +401,8 @@ export class AnthropicAgent {
 
       messages.push({ role: 'user', content: toolResults });
 
+      // Subsequent iterations use Haiku for cost efficiency
+      console.log(`[Agent] Tool iteration ${toolIterations}: model=${AGENT_CONFIG.model}`);
       response = await this.client.messages.create({
         model: AGENT_CONFIG.model,
         max_tokens: AGENT_CONFIG.maxTokens,
@@ -402,7 +412,7 @@ export class AnthropicAgent {
         messages,
       });
 
-      // Accumulate usage
+      // Accumulate usage (Haiku costs)
       totalUsage.inputTokens += response.usage?.input_tokens || 0;
       totalUsage.outputTokens += response.usage?.output_tokens || 0;
     }
@@ -413,7 +423,7 @@ export class AnthropicAgent {
     );
     const text = textBlocks.map((b) => b.text).join('\n') || 'I was unable to generate a response.';
 
-    return { text, totalUsage, toolIterations, actionsPerformed: context.actionsPerformed };
+    return { text, totalUsage, sonnetUsage, toolIterations, actionsPerformed: context.actionsPerformed };
     } catch (error: any) {
       console.error('Anthropic API error:', error?.message || error);
       let text: string;
