@@ -1,7 +1,7 @@
 export const AGENT_CONFIG = {
   name: 'Caleo Assistant',
   model: 'claude-haiku-4-5-20251001',
-  sonnetModel: 'claude-sonnet-4-5-20241022',
+  sonnetModel: 'claude-sonnet-4-6',
   maxTokens: 4096,
   toolTemperature: 0.2,
   chatTemperature: 0.5,
@@ -56,6 +56,7 @@ export interface DynamicPromptContext {
   preferences?: UserPreferences;
   billingContext?: { balanceCents: number; isLow: boolean };
   slackThreadUrl?: string;
+  calendarTokenStale?: boolean;
 }
 
 function buildEventTags(e: FormattedCalendarSnapshot): string {
@@ -134,6 +135,14 @@ export function buildSystemPrompt(ctx: DynamicPromptContext): string {
 - When the user asks you to "pull up", "check", or "look at" their calendar, ALWAYS call get_calendar_events regardless of what you see above.
 - When in doubt, call the tool. A redundant API call is always better than a wrong answer.
 - For creating, updating, or deleting meetings, always use the appropriate tool.`);
+
+  // Stale token warning
+  if (ctx.calendarTokenStale) {
+    sections.push(`⚠️ CALENDAR CONNECTION ISSUE:
+Your calendar connection appears to be expired or revoked. Calendar queries may return empty results that do NOT reflect your actual schedule.
+- If the user asks about their calendar and you get zero events, tell them: "It looks like your calendar connection may have expired. Please run /caleo-auth to reconnect, and then try again."
+- Do NOT say "your calendar is clear" — the data is unreliable right now.`);
+  }
 
   // Conflicts
   if (ctx.upcomingConflicts.length > 0) {

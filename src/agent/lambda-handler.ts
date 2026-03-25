@@ -46,6 +46,7 @@ export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
   const authHeader = event.headers?.['authorization'] || event.headers?.['Authorization'];
   const expectedKey = process.env.AGENT_API_KEY;
   if (!expectedKey || authHeader !== `Bearer ${expectedKey}`) {
+    console.warn(`[Lambda Auth] Rejected — expectedKey set: ${!!expectedKey}, authHeader present: ${!!authHeader}, authHeader prefix: ${authHeader?.substring(0, 10) || 'none'}`);
     return { statusCode: 401, headers: corsHeaders, body: JSON.stringify({ error: 'Unauthorized' }) };
   }
 

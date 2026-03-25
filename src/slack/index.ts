@@ -696,11 +696,31 @@ async function processUserMessage(args: {
     let multiDayEvents: DayEvents[] = [];
     let todayEvents: CalendarEvent[] = [];
     let weekEventCount = 0;
+    let calendarTokenStale = false;
     if (providers.size > 0) {
       multiDayEvents = await fetchMultiDayEvents(providers, tz, 3, 3);
       const todayEntry = multiDayEvents.find(d => d.label === 'today');
       todayEvents = todayEntry?.events || [];
       weekEventCount = getWeekEventCount(multiDayEvents);
+
+      // If connected but 0 events across entire week, validate token health
+      if (weekEventCount === 0) {
+        for (const [provType, prov] of providers) {
+          if (prov.accessToken) {
+            try {
+              const oauth = provType === 'google' ? googleOAuth : microsoftOAuth;
+              const isValid = await oauth.validateToken(prov.accessToken);
+              if (!isValid) {
+                console.warn(`[Token Health] ${provType} token failed validation — likely expired or revoked`);
+                calendarTokenStale = true;
+              }
+            } catch (err) {
+              console.warn(`[Token Health] ${provType} validation error:`, err);
+              calendarTokenStale = true;
+            }
+          }
+        }
+      }
     }
 
     const formattedEvents = formatEventsForPrompt(todayEvents, tz);
@@ -740,6 +760,7 @@ async function processUserMessage(args: {
       preferences,
       billingContext,
       slackThreadUrl,
+      calendarTokenStale,
     };
 
     systemPrompt = buildSystemPrompt(promptCtx);
