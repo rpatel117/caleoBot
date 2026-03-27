@@ -152,6 +152,19 @@ const toolDefinitions: Anthropic.Tool[] = [
     }
   },
   {
+    name: 'rsvp_meeting',
+    description: 'Accept, decline, or tentatively accept a calendar meeting invitation.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        meetingId: { type: 'string', description: 'Meeting ID to RSVP' },
+        response: { type: 'string', description: 'Your response', enum: ['accepted', 'declined', 'tentative'] },
+        provider: { type: 'string', description: 'Calendar provider', enum: ['microsoft', 'google'] }
+      },
+      required: ['meetingId', 'response']
+    }
+  },
+  {
     name: 'check_availability',
     description: 'Check availability for a specific time range. Supports checking multiple people\'s calendars simultaneously — returns per-attendee conflict details.',
     input_schema: {
@@ -787,6 +800,30 @@ export class AnthropicAgent {
           }
 
           return { success: true, meetingId: input.meetingId, undoAvailable: true };
+        } catch (error: any) {
+          return { success: false, error: this.formatApiError(error, provider) };
+        }
+      }
+
+      case 'rsvp_meeting': {
+        const provider = this.getProvider(context, input.provider);
+        if (!provider?.calendar || !provider.accessToken) {
+          return { success: false, error: this.getProviderError(context, input.provider) };
+        }
+        try {
+          await provider.calendar.rsvpEvent(provider.accessToken, input.meetingId, input.response);
+
+          // Audit log
+          if (context.dbUserId) {
+            repository.logAction({
+              userId: context.dbUserId, action: 'rsvp_meeting', eventId: input.meetingId,
+              provider: provider.providerType,
+              details: { response: input.response },
+              slackChannel: context.slackChannelId, slackThreadTs: context.slackThreadTs,
+            }).catch(err => console.error('[AuditLog] rsvp_meeting error:', err?.message));
+          }
+
+          return { success: true, meetingId: input.meetingId, response: input.response };
         } catch (error: any) {
           return { success: false, error: this.formatApiError(error, provider) };
         }

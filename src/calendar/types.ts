@@ -86,11 +86,14 @@ export interface TimeSlot {
   end: string;
 }
 
+export type RsvpStatus = 'accepted' | 'declined' | 'tentative';
+
 export interface CalendarProvider {
   getEvents(accessToken: string, start: Date, end: Date): Promise<CalendarEvent[]>;
   createEvent(accessToken: string, event: CreateEventParams): Promise<CalendarEvent>;
   updateEvent(accessToken: string, eventId: string, updates: UpdateEventParams): Promise<CalendarEvent>;
   deleteEvent(accessToken: string, eventId: string): Promise<void>;
+  rsvpEvent(accessToken: string, eventId: string, status: RsvpStatus): Promise<void>;
   checkAvailability(accessToken: string, start: Date, end: Date, attendees?: string[]): Promise<AvailabilityResult>;
   findFreeTime(accessToken: string, events: CalendarEvent[], params: FreeTimeParams): TimeSlot[];
 }

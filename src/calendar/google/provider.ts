@@ -1,7 +1,7 @@
 import {
   CalendarProvider, CalendarEvent, CreateEventParams, UpdateEventParams,
   AvailabilityResult, FreeTimeParams, TimeSlot, AttendeeAvailability,
-  EventStatus, ResponseStatus,
+  EventStatus, ResponseStatus, RsvpStatus,
 } from '../types';
 import { fetchWithRetry } from '../fetch-retry';
 
@@ -28,11 +28,9 @@ export class GoogleCalendarProvider implements CalendarProvider {
 
     const data = await response.json() as any;
     const items = data.items || [];
-    // Log first event's raw attendee data for debugging response status issues
-    if (items.length > 0) {
-      const sample = items[0];
-      const selfAtt = sample.attendees?.find((a: any) => a.self === true);
-      console.log(`[Google getEvents] ${items.length} events, sample: "${sample.summary}", status=${sample.status}, selfAttendee=${JSON.stringify(selfAtt || 'none')}`);
+    for (const item of items) {
+      const selfAtt = item.attendees?.find((a: any) => a.self === true);
+      console.log(`[Google getEvents] "${item.summary}" status=${item.status}, selfResponse=${selfAtt?.responseStatus || 'no-self-attendee'}`);
     }
     return items.map((item: any) => this.mapEvent(item));
   }
@@ -152,6 +150,46 @@ export class GoogleCalendarProvider implements CalendarProvider {
       const errorText = await response.text();
       throw new Error(`Google Calendar API error: ${response.status} - ${errorText}`);
     }
+  }
+
+  async rsvpEvent(accessToken: string, eventId: string, status: RsvpStatus): Promise<void> {
+    console.log(`[Google] RSVP event ${eventId} → ${status}`);
+
+    // Fetch the event to get current attendees
+    const getResponse = await fetchWithRetry(`${BASE_URL}/calendars/primary/events/${encodeURIComponent(eventId)}`, {
+      headers: { 'Authorization': `Bearer ${accessToken}` },
+    });
+    if (!getResponse.ok) {
+      const errorText = await getResponse.text();
+      throw new Error(`Google Calendar API error: ${getResponse.status} - ${errorText}`);
+    }
+    const event = await getResponse.json() as any;
+
+    // Find self in attendees and update responseStatus
+    const attendees = event.attendees || [];
+    const selfAttendee = attendees.find((a: any) => a.self === true);
+    if (!selfAttendee) {
+      throw new Error('Cannot RSVP: you are not listed as an attendee on this event');
+    }
+
+    const googleStatus = status === 'tentative' ? 'tentative' : status;
+    selfAttendee.responseStatus = googleStatus;
+
+    // PATCH with updated attendees
+    const patchResponse = await fetchWithRetry(`${BASE_URL}/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ attendees }),
+    });
+
+    if (!patchResponse.ok) {
+      const errorText = await patchResponse.text();
+      throw new Error(`Google Calendar API error: ${patchResponse.status} - ${errorText}`);
+    }
+    console.log(`[Google] RSVP successful: ${eventId} → ${status}`);
   }
 
   async checkAvailability(accessToken: string, start: Date, end: Date, attendees?: string[]): Promise<AvailabilityResult> {

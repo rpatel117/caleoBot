@@ -1,7 +1,7 @@
 import {
   CalendarProvider, CalendarEvent, CreateEventParams, UpdateEventParams,
   AvailabilityResult, FreeTimeParams, TimeSlot, AttendeeAvailability,
-  ResponseStatus,
+  ResponseStatus, RsvpStatus,
 } from '../types';
 import { fetchWithRetry } from '../fetch-retry';
 
@@ -153,6 +153,32 @@ export class MicrosoftCalendarProvider implements CalendarProvider {
       const errorText = await response.text();
       throw new Error(`Graph API error: ${response.status} - ${errorText}`);
     }
+  }
+
+  async rsvpEvent(accessToken: string, eventId: string, status: RsvpStatus): Promise<void> {
+    // Microsoft Graph has dedicated endpoints for accept/decline/tentativelyAccept
+    const actionMap: Record<RsvpStatus, string> = {
+      accepted: 'accept',
+      declined: 'decline',
+      tentative: 'tentativelyAccept',
+    };
+    const action = actionMap[status];
+    console.log(`[Microsoft] RSVP event ${eventId} → ${action}`);
+
+    const response = await fetchWithRetry(`${BASE_URL}/me/calendar/events/${encodeURIComponent(eventId)}/${action}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ sendResponse: true }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Graph API error: ${response.status} - ${errorText}`);
+    }
+    console.log(`[Microsoft] RSVP successful: ${eventId} → ${status}`);
   }
 
   async checkAvailability(accessToken: string, start: Date, end: Date, attendees?: string[]): Promise<AvailabilityResult> {
